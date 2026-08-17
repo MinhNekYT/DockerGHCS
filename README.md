@@ -1,1 +1,3 @@
-# Windows-on-Docker
+# WindowsGHCS
+
+Cách sử dụng nó: bash a.sh
