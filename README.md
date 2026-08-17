@@ -1,3 +1,4 @@
 # WindowsGHCS
 
-Cách sử dụng nó: bash a.sh
+Cách sử dụng nó: Tạo 1 codespaces với cấu hình 4 core CPU và 16GB ram, khi đã tạo được thì chạy lệnh này
+```bash a.sh```
