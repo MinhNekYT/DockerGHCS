@@ -2,14 +2,11 @@ services:
   windows:
     image: ghcr.io/dockur/windows
     environment:
-      RAM_SIZE: "half"
-      DISK_SIZE: "400G"
-      CPU_CORES: "max"
-      DISK_TYPE: "ide"
-      ARGUMENTS: "-drive file=/driver.iso,media=cdrom"
+      USERNAME: "windowsghcs"
+      PASSWORD: "123456"
     devices:
-      - /dev/kvm:/dev/kvm
-      - /dev/net/tun:/dev/net/tun
+      - /dev/kvm
+      - /dev/net/tun
     cap_add:
       - NET_ADMIN
     ports:
