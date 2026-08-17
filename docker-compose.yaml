@@ -2,6 +2,9 @@ services:
   windows:
     image: ghcr.io/dockur/windows
     environment:
+      RAM_SIZE: "half"
+      CPU_CORES: "max"
+      DISK_SIZE: "400G"
       USERNAME: "windowsghcs"
       PASSWORD: "123456"
     devices:
