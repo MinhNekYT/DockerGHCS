@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Script cài Docker, tải Windows ISO/VirtIO driver và khởi động Docker Compose.
-# Chạy script này trong một Codespace mới theo hướng dẫn của repository.
+# Cài Docker, chuẩn bị storage/ISO và khởi động dockur/windows.
+# Script này được thiết kế cho GitHub Codespaces hoặc Ubuntu có quyền root,
+# Docker daemon và KVM khả dụng.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WINDOWS_ISO_PATH="/mnt/custom.iso"
 DRIVER_ISO_PATH="/mnt/driver.iso"
 DRIVER_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/virtio-win-0.1.285.iso"
+MIN_FREE_KB=$((10 * 1024 * 1024))
+DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 
 on_error() {
     local exit_code=$?
@@ -18,20 +21,25 @@ on_error() {
         echo "Trạng thái package chưa hoàn tất:"
         dpkg --audit 2>/dev/null || true
     fi
+    if [[ -s "${DOCKER_APT_LOG}" ]]; then
+        echo "Nhật ký cài Docker gần nhất:"
+        tail -n 30 "${DOCKER_APT_LOG}"
+    fi
     if [[ -s /tmp/windowsghcs-dockerd.log ]]; then
         echo "Nhật ký Docker daemon gần nhất:"
-        tail -n 20 /tmp/windowsghcs-dockerd.log
+        tail -n 30 /tmp/windowsghcs-dockerd.log
     fi
     exit "${exit_code}"
 }
 trap on_error ERR
 
-# Xác nhận trước khi thực hiện thay đổi hệ thống và tải ISO dung lượng lớn.
-if [[ "${1:-}" != "--root" && "${EUID}" -ne 0 ]]; then
+confirm_once() {
+    [[ "${WINDOWS_CONFIRMATION_DONE:-0}" == "1" ]] && return 0
+
     echo ""
     echo "LƯU Ý: Một khi chạy script này thì sẽ không thể cài bản Windows khác bằng script này,"
     echo "chỉ có thể tạo codespaces khác để cài bản Windows khác."
-    echo "Script cũng sẽ gỡ các gói Docker cũ/xung đột trước khi cài Docker chính thức."
+    echo "Script có thể thay đổi package Docker, mount /mnt và tải các file ISO dung lượng lớn."
     echo ""
 
     while true; do
@@ -49,10 +57,30 @@ if [[ "${1:-}" != "--root" && "${EUID}" -ne 0 ]]; then
                 ;;
         esac
     done
+}
 
+confirm_once
+
+# Khi chạy bằng user thường, xác nhận trước rồi re-exec một lần bằng root.
+if [[ "${EUID}" -ne 0 ]]; then
+    if ! command -v sudo > /dev/null 2>&1; then
+        echo "Không tìm thấy sudo. Hãy chạy script bằng root hoặc cài sudo trước."
+        exit 1
+    fi
     sudo -v
     calling_user="${SUDO_USER:-${USER:-}}"
-    exec sudo env "WINDOWS_INSTALL_USER=${calling_user}" bash "$0" --root
+    sudo_environment=(
+        "WINDOWS_CONFIRMATION_DONE=1"
+        "WINDOWS_INSTALL_USER=${calling_user}"
+    )
+    # Codespaces có thể dùng DOCKER_HOST/DOCKER_CONTEXT để trỏ tới daemon bên ngoài.
+    # Giữ các biến này khi chuyển sang root, nếu không script sẽ tưởng Docker bị hỏng.
+    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH; do
+        if [[ -n "${!docker_env_name:-}" ]]; then
+            sudo_environment+=("${docker_env_name}=${!docker_env_name}")
+        fi
+    done
+    exec sudo env "${sudo_environment[@]}" bash "$0"
 fi
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -63,38 +91,57 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 INSTALL_USER="${WINDOWS_INSTALL_USER:-${SUDO_USER:-}}"
 
+if [[ -f "${SCRIPT_DIR}/docker-compose.yaml" ]]; then
+    COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yaml"
+elif [[ -f "${SCRIPT_DIR}/docker-compose.yml" ]]; then
+    COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+else
+    echo "Không tìm thấy docker-compose.yaml hoặc docker-compose.yml trong thư mục script:"
+    echo "  ${SCRIPT_DIR}"
+    exit 1
+fi
+
 install_docker() {
     echo ""
     echo "=== Kiểm tra Docker hiện có ==="
-    # GitHub Codespaces có thể đã có Docker CLI/Compose. Không gỡ và cài lại
-    # nếu Compose đã hoạt động, vì việc thay thế Moby bằng Docker CE thường gây
-    # lỗi dpkg với docker-ce/containerd.io trong môi trường Codespaces.
+    # Codespaces thường đã có Docker/Moby. Nếu Compose hoạt động thì không
+    # thay thế package, tránh lỗi dpkg khi cài docker-ce lần nữa.
     if command -v docker > /dev/null 2>&1 \
-        && docker compose version > /dev/null 2>&1; then
-        echo "Docker Compose đã có sẵn. Bỏ qua bước cài lại package Docker."
+        && docker compose version > /dev/null 2>&1 \
+        && docker info > /dev/null 2>&1; then
+        echo "Docker Compose và Docker daemon đã hoạt động. Không cài đè Docker package."
     else
         echo ""
-        echo "=== Sửa trạng thái package nếu lần cài trước bị gián đoạn ==="
+        echo "=== Khôi phục trạng thái apt/dpkg nếu lần chạy trước bị gián đoạn ==="
         dpkg --configure -a || true
         apt-get -f install -y || true
 
         echo ""
-        echo "=== Gỡ các gói Docker/Moby có thể xung đột ==="
-        conflict_packages=(
+        echo "=== Gỡ package Docker/Moby xung đột ==="
+        official_packages=(
+            docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+            docker-compose-plugin docker-ce-rootless-extras
+        )
+        distro_packages=(
             docker.io docker-doc docker-compose docker-compose-v2 docker-buildx
             podman-docker containerd runc moby-engine moby-cli moby-buildx
             moby-compose moby-containerd moby-runc
         )
-        installed_conflicts=()
-        for pkg in "${conflict_packages[@]}"; do
+
+        # Purge các package Docker CE bị cài dở sau lỗi mã 100.
+        apt-get purge -y "${official_packages[@]}" || true
+        installed_distro_packages=()
+        for pkg in "${distro_packages[@]}"; do
             if dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null \
                 | grep -q 'install ok installed'; then
-                installed_conflicts+=("${pkg}")
+                installed_distro_packages+=("${pkg}")
             fi
         done
-        if ((${#installed_conflicts[@]} > 0)); then
-            apt-get remove -y "${installed_conflicts[@]}" || true
+        if ((${#installed_distro_packages[@]} > 0)); then
+            apt-get remove -y "${installed_distro_packages[@]}" || true
         fi
+        dpkg --configure -a || true
+        apt-get -f install -y || true
 
         apt-get update
         apt-get install -y ca-certificates curl gnupg lsb-release
@@ -103,29 +150,31 @@ install_docker() {
         echo "=== Cấu hình Docker official stable repository ==="
         install -m 0755 -d /etc/apt/keyrings
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-            | gpg --dearmor --batch --yes -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
+            -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
         rm -f /etc/apt/sources.list.d/docker.sources \
               /etc/apt/sources.list.d/docker.list
 
         docker_arch="$(dpkg --print-architecture)"
         ubuntu_codename="$(lsb_release -cs)"
-        echo "deb [arch=${docker_arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${ubuntu_codename} stable" \
-            | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: ${ubuntu_codename}
+Components: stable
+Architectures: ${docker_arch}
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
         apt-get update
 
         echo ""
         echo "=== Cài Docker CE, CLI, Containerd, Buildx và Compose ==="
-        docker_packages=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
-        if ! apt-get install -y --no-install-recommends "${docker_packages[@]}"; then
-            echo "Docker CE bị lỗi khi cài trong môi trường này; đang phục hồi dpkg..."
-            dpkg --configure -a || true
-            apt-get -f install -y || true
-
-            # Fallback cho Codespaces không tương thích với docker-ce post-install:
-            # dùng Docker Engine và Compose plugin từ Ubuntu repository.
-            echo "Thử fallback: docker.io + docker-compose-v2 từ Ubuntu repository..."
-            apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || true
+        : > "${DOCKER_APT_LOG}"
+        if ! apt-get install -y --no-install-recommends \
+            docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+            2>&1 | tee "${DOCKER_APT_LOG}"; then
+            echo "Docker CE cài thất bại; đang phục hồi package và chuyển sang fallback Ubuntu."
+            apt-get purge -y "${official_packages[@]}" || true
             dpkg --configure -a || true
             apt-get -f install -y || true
             apt-get update
@@ -138,7 +187,7 @@ install_docker() {
         exit 1
     fi
     if ! docker compose version > /dev/null 2>&1; then
-        echo "Không tìm thấy Docker Compose plugin sau khi cài đặt."
+        echo "Không tìm thấy Docker Compose sau khi cài đặt."
         exit 1
     fi
 
@@ -151,76 +200,100 @@ install_docker() {
         echo "Đã thêm ${INSTALL_USER} vào group docker. Quyền mới có hiệu lực sau khi đăng nhập lại."
     fi
 
-    # Codespaces có thể không chạy systemd; thử nhiều cách khởi động daemon.
-    if command -v systemctl > /dev/null 2>&1; then
-        systemctl enable --now docker 2>/dev/null || true
-    fi
-    if ! docker info > /dev/null 2>&1 && command -v service > /dev/null 2>&1; then
-        service docker start 2>/dev/null || true
-    fi
-    if ! docker info > /dev/null 2>&1 && command -v dockerd > /dev/null 2>&1; then
-        echo "Đang thử khởi động Docker daemon trực tiếp..."
-        nohup dockerd > /tmp/windowsghcs-dockerd.log 2>&1 &
-        dockerd_pid=$!
-        for _ in {1..30}; do
-            if docker info > /dev/null 2>&1; then
-                break
-            fi
-            if ! kill -0 "${dockerd_pid}" 2>/dev/null; then
-                break
-            fi
-            sleep 1
-        done
+    echo ""
+    echo "=== Kiểm tra Docker daemon ==="
+    if docker info > /dev/null 2>&1; then
+        echo "Docker daemon đang hoạt động."
+    else
+        if command -v systemctl > /dev/null 2>&1; then
+            systemctl enable --now docker 2>/dev/null || true
+        fi
+        if ! docker info > /dev/null 2>&1 && command -v service > /dev/null 2>&1; then
+            service docker start 2>/dev/null || true
+        fi
+        if ! docker info > /dev/null 2>&1 && command -v dockerd > /dev/null 2>&1; then
+            echo "Đang thử khởi động Docker daemon trực tiếp..."
+            nohup dockerd > /tmp/windowsghcs-dockerd.log 2>&1 &
+            dockerd_pid=$!
+            for _ in {1..30}; do
+                if docker info > /dev/null 2>&1; then
+                    break
+                fi
+                if ! kill -0 "${dockerd_pid}" 2>/dev/null; then
+                    break
+                fi
+                sleep 1
+            done
+        fi
     fi
 
     docker --version
     docker compose version
     if ! docker info > /dev/null 2>&1; then
         echo "Docker CLI/Compose đã cài nhưng Docker daemon chưa chạy hoặc Codespace không cấp quyền daemon."
-        if [[ -s /tmp/windowsghcs-dockerd.log ]]; then
-            echo "Nhật ký Docker daemon gần nhất:"
-            tail -n 20 /tmp/windowsghcs-dockerd.log
-        fi
         exit 1
     fi
     echo "Đã cài và kiểm tra Docker thành công."
 }
 
+check_kvm() {
+    echo ""
+    echo "=== Kiểm tra KVM ==="
+    if [[ ! -e /dev/kvm ]]; then
+        echo "Không tìm thấy /dev/kvm. Host/Codespace chưa cấp KVM hoặc nested virtualization."
+        echo "Windows container sẽ không chạy được; hãy dùng máy/runner có KVM rồi chạy lại."
+        exit 1
+    fi
+    if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+        echo "Không có quyền đọc/ghi /dev/kvm dù thiết bị đã tồn tại."
+        echo "Hãy chạy trong môi trường có quyền KVM hoặc điều chỉnh quyền thiết bị."
+        exit 1
+    fi
+    echo "KVM khả dụng."
+}
+
 mount_storage() {
     echo ""
-    echo "=== Kiểm tra phân vùng đã được mount vào /mnt ==="
+    echo "=== Kiểm tra storage tại /mnt ==="
     mkdir -p /mnt
 
-    if findmnt -rn -M /mnt > /dev/null 2>&1; then
-        echo "Phân vùng đã được mount vào /mnt. Tiếp tục..."
-        return 0
-    fi
+    if { command -v findmnt > /dev/null 2>&1 && findmnt -rn -M /mnt > /dev/null 2>&1; } \
+        || { command -v mountpoint > /dev/null 2>&1 && mountpoint -q /mnt; }; then
+        echo "Một phân vùng đã được mount trực tiếp vào /mnt."
+    else
+        echo "Chưa có phân vùng riêng tại /mnt; đang tìm phân vùng trống lớn hơn 500GB..."
+        target_partition="$(lsblk -b -nrpo NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null \
+            | awk '$2 > 500000000000 && $3 == "part" && $4 == "" {print $1; exit}')"
 
-    echo "Phân vùng chưa được mount. Đang tìm phân vùng lớn hơn 500GB..."
+        if [[ -z "${target_partition}" ]]; then
+            disk="$(lsblk -b -nrpo NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null \
+                | awk '$2 > 500000000000 && $3 == "disk" && $4 == "" {print $1; exit}')"
+            if [[ -n "${disk}" ]]; then
+                target_partition="$(lsblk -nrpo NAME,TYPE "${disk}" \
+                    | awk '$2 == "part" {print $1; exit}')"
+            fi
+        fi
 
-    # Ưu tiên một partition chưa mount trực tiếp; cách này xử lý được cả NVMe.
-    target_partition="$(lsblk -b -nrpo NAME,SIZE,TYPE,MOUNTPOINT | \
-        awk '$2 > 500000000000 && $3 == "part" && $4 == "" {print $1; exit}')"
-
-    # Nếu chưa có partition phù hợp, tìm disk lớn chưa mount và partition đầu tiên của disk đó.
-    if [[ -z "${target_partition}" ]]; then
-        disk="$(lsblk -b -nrpo NAME,SIZE,TYPE,MOUNTPOINT | \
-            awk '$2 > 500000000000 && $3 == "disk" && $4 == "" {print $1; exit}')"
-        if [[ -n "${disk}" ]]; then
-            target_partition="$(lsblk -nrpo NAME,TYPE "${disk}" | \
-                awk '$2 == "part" {print $1; exit}')"
+        if [[ -n "${target_partition}" ]]; then
+            echo "Đã tìm thấy phân vùng: ${target_partition}"
+            mount "${target_partition}" /mnt
+            echo "Đã mount ${target_partition} vào /mnt."
+        else
+            echo "Không tìm thấy phân vùng riêng trên 500GB."
+            echo "Sử dụng thư mục /mnt hiện có; Codespaces thường dùng storage trong container."
         fi
     fi
 
-    if [[ -z "${target_partition}" ]]; then
-        echo "Không tìm thấy phân vùng có dung lượng lớn hơn 500GB chưa được mount."
-        echo "Vui lòng kiểm tra bằng lệnh lsblk hoặc chạy trong GitHub Codespaces."
+    if [[ ! -d /mnt || ! -w /mnt ]]; then
+        echo "/mnt không tồn tại hoặc không có quyền ghi."
         exit 1
     fi
-
-    echo "Đã tìm thấy phân vùng: ${target_partition}"
-    mount "${target_partition}" /mnt
-    echo "Phân vùng ${target_partition} đã được mount vào /mnt."
+    available_kb="$(df -Pk /mnt | awk 'NR == 2 {print $4}')"
+    if [[ ! "${available_kb}" =~ ^[0-9]+$ ]] || ((available_kb < MIN_FREE_KB)); then
+        echo "Dung lượng trống tại /mnt thấp hơn 10GiB; không đủ an toàn để tải ISO."
+        exit 1
+    fi
+    echo "Dung lượng trống tại /mnt đủ để tiếp tục."
 }
 
 download_file() {
@@ -232,41 +305,71 @@ download_file() {
     if ! curl -fL --retry 3 --retry-delay 5 --progress-bar \
         "${url}" -o "${temporary_file}"; then
         rm -f "${temporary_file}"
-        echo "Không thể tải file từ URL: ${url}"
-        exit 1
+        return 1
     fi
-
     mv -f "${temporary_file}" "${destination}"
+}
+
+validate_iso_file() {
+    local path="$1"
+    local size_bytes
+    size_bytes="$(stat -c '%s' "${path}" 2>/dev/null || echo 0)"
+    if ((size_bytes < 10 * 1024 * 1024)); then
+        echo "File ISO có kích thước bất thường hoặc tải chưa hoàn tất: ${path}"
+        return 1
+    fi
 }
 
 download_isos() {
     local windows_iso_url="$1"
+    local windows_created=0
 
-    # Không ghi đè ISO đã có, đúng với cảnh báo chạy một lần trên Codespace.
     if [[ -e "${WINDOWS_ISO_PATH}" ]]; then
         echo "Đã tồn tại custom.iso trong /mnt."
-        echo "Để tránh cài đè hoặc cài nhầm bản Windows khác, hãy tạo Codespace mới rồi chạy lại script."
+        echo "Để tránh cài đè bản Windows khác, hãy tạo Codespace mới rồi chạy lại script."
         exit 1
     fi
 
     echo ""
     echo "=== Tải Windows ISO ==="
     echo "Đang tải Windows ISO vào ${WINDOWS_ISO_PATH}..."
-    download_file "${windows_iso_url}" "${WINDOWS_ISO_PATH}"
-
-    if [[ -e "${DRIVER_ISO_PATH}" ]]; then
-        echo "driver.iso đã tồn tại, giữ nguyên file hiện có."
-    else
-        echo "Đang tải VirtIO driver ISO vào ${DRIVER_ISO_PATH}..."
-        download_file "${DRIVER_ISO_URL}" "${DRIVER_ISO_PATH}"
+    if ! download_file "${windows_iso_url}" "${WINDOWS_ISO_PATH}"; then
+        echo "Không thể tải Windows ISO."
+        exit 1
+    fi
+    windows_created=1
+    if ! validate_iso_file "${WINDOWS_ISO_PATH}"; then
+        rm -f "${WINDOWS_ISO_PATH}"
+        exit 1
     fi
 
-    echo "Đã tải xong hai file ISO."
+    if [[ -e "${DRIVER_ISO_PATH}" ]]; then
+        echo "driver.iso đã tồn tại, đang kiểm tra file hiện có."
+        if ! validate_iso_file "${DRIVER_ISO_PATH}"; then
+            echo "driver.iso hiện có không hợp lệ. Hãy xóa file này hoặc tạo Codespace mới rồi chạy lại."
+            exit 1
+        fi
+        echo "driver.iso hợp lệ, giữ nguyên file hiện có."
+    else
+        echo "Đang tải VirtIO driver ISO vào ${DRIVER_ISO_PATH}..."
+        if ! download_file "${DRIVER_ISO_URL}" "${DRIVER_ISO_PATH}"; then
+            [[ "${windows_created}" == "1" ]] && rm -f "${WINDOWS_ISO_PATH}"
+            echo "Không thể tải VirtIO driver ISO; đã xóa Windows ISO mới tải để có thể chạy lại an toàn."
+            exit 1
+        fi
+        if ! validate_iso_file "${DRIVER_ISO_PATH}"; then
+            rm -f "${DRIVER_ISO_PATH}"
+            [[ "${windows_created}" == "1" ]] && rm -f "${WINDOWS_ISO_PATH}"
+            exit 1
+        fi
+    fi
+    echo "Đã tải và kiểm tra xong hai file ISO."
 }
 
 install_docker
+check_kvm
+mount_storage
 
-# Hỏi URL sau khi Docker đã cài xong, theo đúng luồng cài đặt yêu cầu.
 echo ""
 read -r -p "Bạn muốn cài bản Windows nào? Hãy dán link ISO Windows mà bạn muốn: " windows_iso_url
 windows_iso_url="${windows_iso_url//$'\r'/}"
@@ -279,21 +382,15 @@ if [[ "${windows_iso_url}" != http://* && "${windows_iso_url}" != https://* ]]; 
     exit 1
 fi
 
-mount_storage
 download_isos "${windows_iso_url}"
 
 cd "${SCRIPT_DIR}"
-if [[ ! -f "docker-compose.yaml" && ! -f "docker-compose.yml" ]]; then
-    echo "Không tìm thấy docker-compose.yaml hoặc docker-compose.yml trong thư mục script:"
-    echo "  ${SCRIPT_DIR}"
-    exit 1
-fi
-
 echo ""
+echo "=== Kiểm tra Docker Compose ==="
+docker compose -f "${COMPOSE_FILE}" config -q
 echo "=== Khởi động Docker Compose ==="
 echo "Chạy lệnh 1: docker compose up -d"
-docker compose up -d
-
+docker compose -f "${COMPOSE_FILE}" up -d
 echo ""
 echo "Chạy lệnh 2: docker compose up"
-docker compose up
+docker compose -f "${COMPOSE_FILE}" up
