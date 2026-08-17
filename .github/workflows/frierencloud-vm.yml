@@ -1,0 +1,51 @@
+name: FrierenCloud Linux VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: Linux hostname provided by FrierenCloud
+        required: true
+        type: string
+      callback_url:
+        description: Signed FrierenCloud URL used to show setup output
+        required: true
+        type: string
+
+jobs:
+  provision-sshx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Change hostname and report it
+        shell: bash
+        env:
+          FC_HOSTNAME: ${{ inputs.hostname }}
+          FC_CALLBACK_URL: ${{ inputs.callback_url }}
+        run: |
+          set -euo pipefail
+          post_log() {
+            curl --fail --silent --show-error --retry 3 \
+              -X POST "$FC_CALLBACK_URL" \
+              -H "content-type: application/json" \
+              --data "$(jq -nc --arg message "$1" --arg runId "$GITHUB_RUN_ID" --arg status "running" '{message: $message, runId: $runId, status: $status}')" || true
+          }
+          sudo hostnamectl set-hostname "$FC_HOSTNAME"
+          post_log "Hostname set to $FC_HOSTNAME"
+
+      - name: Install and run SSHX
+        shell: bash
+        env:
+          FC_CALLBACK_URL: ${{ inputs.callback_url }}
+        run: |
+          set -o pipefail
+          post_log() {
+            curl --fail --silent --show-error --retry 3 \
+              -X POST "$FC_CALLBACK_URL" \
+              -H "content-type: application/json" \
+              --data "$(jq -nc --arg message "$1" --arg runId "$GITHUB_RUN_ID" --arg status "running" '{message: $message, runId: $runId, status: $status}')" || true
+          }
+          curl -sSf https://sshx.io/get | sh && sshx 2>&1 | while IFS= read -r line; do
+            printf '%s\n' "$line"
+            post_log "$line"
+          done
