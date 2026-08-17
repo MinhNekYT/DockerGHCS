@@ -14,6 +14,14 @@ on_error() {
     trap - ERR
     echo ""
     echo "Script dừng do lỗi (mã lỗi: ${exit_code})."
+    if command -v dpkg > /dev/null 2>&1; then
+        echo "Trạng thái package chưa hoàn tất:"
+        dpkg --audit 2>/dev/null || true
+    fi
+    if [[ -s /tmp/windowsghcs-dockerd.log ]]; then
+        echo "Nhật ký Docker daemon gần nhất:"
+        tail -n 20 /tmp/windowsghcs-dockerd.log
+    fi
     exit "${exit_code}"
 }
 trap on_error ERR
@@ -57,65 +65,99 @@ INSTALL_USER="${WINDOWS_INSTALL_USER:-${SUDO_USER:-}}"
 
 install_docker() {
     echo ""
-    echo "=== Gỡ các gói Docker có thể xung đột ==="
-    for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do
-        apt-get remove -y "${pkg}" || true
-    done
+    echo "=== Kiểm tra Docker hiện có ==="
+    # GitHub Codespaces có thể đã có Docker CLI/Compose. Không gỡ và cài lại
+    # nếu Compose đã hoạt động, vì việc thay thế Moby bằng Docker CE thường gây
+    # lỗi dpkg với docker-ce/containerd.io trong môi trường Codespaces.
+    if command -v docker > /dev/null 2>&1 \
+        && docker compose version > /dev/null 2>&1; then
+        echo "Docker Compose đã có sẵn. Bỏ qua bước cài lại package Docker."
+    else
+        echo ""
+        echo "=== Sửa trạng thái package nếu lần cài trước bị gián đoạn ==="
+        dpkg --configure -a || true
+        apt-get -f install -y || true
 
-    echo ""
-    echo "=== Cập nhật package database ==="
-    apt-get update
+        echo ""
+        echo "=== Gỡ các gói Docker/Moby có thể xung đột ==="
+        conflict_packages=(
+            docker.io docker-doc docker-compose docker-compose-v2 docker-buildx
+            podman-docker containerd runc moby-engine moby-cli moby-buildx
+            moby-compose moby-containerd moby-runc
+        )
+        installed_conflicts=()
+        for pkg in "${conflict_packages[@]}"; do
+            if dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null \
+                | grep -q 'install ok installed'; then
+                installed_conflicts+=("${pkg}")
+            fi
+        done
+        if ((${#installed_conflicts[@]} > 0)); then
+            apt-get remove -y "${installed_conflicts[@]}" || true
+        fi
 
-    echo ""
-    echo "=== Cài các package cần thiết ==="
-    apt-get install -y ca-certificates curl gnupg lsb-release
+        apt-get update
+        apt-get install -y ca-certificates curl gnupg lsb-release
 
-    echo ""
-    echo "=== Thêm Docker official GPG key ==="
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        | gpg --dearmor --batch --yes -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
+        echo ""
+        echo "=== Cấu hình Docker official stable repository ==="
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+            | gpg --dearmor --batch --yes -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+        rm -f /etc/apt/sources.list.d/docker.sources \
+              /etc/apt/sources.list.d/docker.list
 
-    echo ""
-    echo "=== Cấu hình Docker stable repository ==="
-    # Xóa cấu hình Docker cũ để tránh duplicate repository hoặc xung đột keyring.
-    rm -f /etc/apt/sources.list.d/docker.sources \
-          /etc/apt/sources.list.d/docker.list
+        docker_arch="$(dpkg --print-architecture)"
+        ubuntu_codename="$(lsb_release -cs)"
+        echo "deb [arch=${docker_arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${ubuntu_codename} stable" \
+            | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        apt-get update
 
-    docker_arch="$(dpkg --print-architecture)"
-    ubuntu_codename="$(lsb_release -cs)"
-    echo "deb [arch=${docker_arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${ubuntu_codename} stable" \
-        | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        echo ""
+        echo "=== Cài Docker CE, CLI, Containerd, Buildx và Compose ==="
+        docker_packages=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
+        if ! apt-get install -y --no-install-recommends "${docker_packages[@]}"; then
+            echo "Docker CE bị lỗi khi cài trong môi trường này; đang phục hồi dpkg..."
+            dpkg --configure -a || true
+            apt-get -f install -y || true
 
-    apt-get update
+            # Fallback cho Codespaces không tương thích với docker-ce post-install:
+            # dùng Docker Engine và Compose plugin từ Ubuntu repository.
+            echo "Thử fallback: docker.io + docker-compose-v2 từ Ubuntu repository..."
+            apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || true
+            dpkg --configure -a || true
+            apt-get -f install -y || true
+            apt-get update
+            apt-get install -y docker.io docker-compose-v2
+        fi
+    fi
 
-    echo ""
-    echo "=== Cài Docker Engine, CLI, Containerd và Compose plugin ==="
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    if ! command -v docker > /dev/null 2>&1; then
+        echo "Không tìm thấy Docker CLI sau khi cài đặt."
+        exit 1
+    fi
+    if ! docker compose version > /dev/null 2>&1; then
+        echo "Không tìm thấy Docker Compose plugin sau khi cài đặt."
+        exit 1
+    fi
 
-    # groupadd sẽ lỗi nếu group đã tồn tại, vì vậy chỉ tạo khi cần.
     if ! getent group docker > /dev/null; then
         groupadd docker
     fi
-
-    # Thêm user đã chạy script vào docker group. Không dùng newgrp trong script,
-    # vì newgrp mở một shell tương tác và có thể làm script bị treo.
     if [[ -n "${INSTALL_USER}" && "${INSTALL_USER}" != "root" ]] \
         && id "${INSTALL_USER}" > /dev/null 2>&1; then
         usermod -aG docker "${INSTALL_USER}"
         echo "Đã thêm ${INSTALL_USER} vào group docker. Quyền mới có hiệu lực sau khi đăng nhập lại."
     fi
 
-    # Codespaces thường không chạy systemd đầy đủ; thử systemctl trước rồi service.
+    # Codespaces có thể không chạy systemd; thử nhiều cách khởi động daemon.
     if command -v systemctl > /dev/null 2>&1; then
         systemctl enable --now docker 2>/dev/null || true
     fi
     if ! docker info > /dev/null 2>&1 && command -v service > /dev/null 2>&1; then
         service docker start 2>/dev/null || true
     fi
-
-    # Một số Codespaces không có systemd. Thử khởi động dockerd nền trong trường hợp đó.
     if ! docker info > /dev/null 2>&1 && command -v dockerd > /dev/null 2>&1; then
         echo "Đang thử khởi động Docker daemon trực tiếp..."
         nohup dockerd > /tmp/windowsghcs-dockerd.log 2>&1 &
@@ -133,16 +175,14 @@ install_docker() {
 
     docker --version
     docker compose version
-
     if ! docker info > /dev/null 2>&1; then
-        echo "Docker Engine đã được cài nhưng daemon chưa chạy hoặc không khả dụng."
+        echo "Docker CLI/Compose đã cài nhưng Docker daemon chưa chạy hoặc Codespace không cấp quyền daemon."
         if [[ -s /tmp/windowsghcs-dockerd.log ]]; then
             echo "Nhật ký Docker daemon gần nhất:"
             tail -n 20 /tmp/windowsghcs-dockerd.log
         fi
         exit 1
     fi
-
     echo "Đã cài và kiểm tra Docker thành công."
 }
 
