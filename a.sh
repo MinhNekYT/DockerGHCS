@@ -17,6 +17,7 @@ MIN_FREE_KB=$((10 * 1024 * 1024))
 DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
 PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
+QEMU_VNC_TIMEOUT="${QEMU_VNC_TIMEOUT:-60}"
 WINDOWS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/windows.yaml"
 MACOS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/macos.yaml"
 
@@ -442,10 +443,18 @@ install_proxmox_packages() {
 find_ovmf() {
     if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd ]]; then
         OVMF_CODE_PATH="/usr/share/OVMF/OVMF_CODE_4M.fd"
-        OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+        if [[ -f /usr/share/OVMF/OVMF_VARS_4M.ms.fd ]]; then
+            OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+        else
+            OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.fd"
+        fi
     elif [[ -f /usr/share/OVMF/OVMF_CODE.fd ]]; then
         OVMF_CODE_PATH="/usr/share/OVMF/OVMF_CODE.fd"
-        OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS.ms.fd"
+        if [[ -f /usr/share/OVMF/OVMF_VARS.ms.fd ]]; then
+            OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS.ms.fd"
+        else
+            OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS.fd"
+        fi
     elif [[ -f /usr/share/ovmf/OVMF.fd ]]; then
         OVMF_CODE_PATH="/usr/share/ovmf/OVMF.fd"
         OVMF_VARS_TEMPLATE=""
@@ -517,6 +526,22 @@ ensure_proxmox_disk() {
     fi
 }
 
+wait_for_tcp_port() {
+    local port="$1"
+    local timeout_seconds="${2:-30}"
+    local elapsed=0
+    while ((elapsed < timeout_seconds)); do
+        if ss -ltn 2>/dev/null \
+            | awk '{print $4}' \
+            | grep -Eq "(^|:)${port}$"; then
+            return 0
+        fi
+        sleep 1
+        ((elapsed += 1))
+    done
+    return 1
+}
+
 start_novnc() {
     local novnc_proxy=""
     if command -v novnc_proxy > /dev/null 2>&1; then
@@ -544,6 +569,11 @@ start_novnc() {
     if ! kill -0 "${NOVNC_PID}" 2>/dev/null; then
         echo "noVNC không khởi động được."
         tail -n 30 "${PROXMOX_NOVNC_LOG}" 2>/dev/null || true
+        exit 1
+    fi
+    if ! wait_for_tcp_port 8006 30; then
+        echo "noVNC process còn chạy nhưng cổng 8006 chưa mở."
+        tail -n 40 "${PROXMOX_NOVNC_LOG}" 2>/dev/null || true
         exit 1
     fi
     echo "noVNC đang chạy với PID ${NOVNC_PID}; mở cổng 8006."
@@ -635,10 +665,10 @@ start_proxmox() {
     fi
 
     local qemu_bin=""
-    if command -v kvm > /dev/null 2>&1; then
-        qemu_bin="$(command -v kvm)"
-    elif command -v qemu-system-x86_64 > /dev/null 2>&1; then
+    if command -v qemu-system-x86_64 > /dev/null 2>&1; then
         qemu_bin="$(command -v qemu-system-x86_64)"
+    elif command -v kvm > /dev/null 2>&1; then
+        qemu_bin="$(command -v kvm)"
     else
         echo "Không tìm thấy kvm hoặc qemu-system-x86_64."
         exit 1
@@ -651,9 +681,13 @@ start_proxmox() {
         pflash_args+=(
             -drive "if=pflash,format=raw,readonly=off,file=${OVMF_VARS_PATH}"
         )
+    elif [[ -n "${OVMF_VARS_TEMPLATE}" && -f "${OVMF_VARS_TEMPLATE}" ]]; then
+        pflash_args=(
+            -drive "if=pflash,format=raw,readonly=off,file=${OVMF_VARS_PATH}"
+        )
     else
         pflash_args=(
-            -drive "if=pflash,format=raw,readonly=off,file=${OVMF_CODE_PATH}"
+            -bios "${OVMF_CODE_PATH}"
         )
     fi
 
@@ -661,9 +695,13 @@ start_proxmox() {
     echo "=== Khởi động Proxmox qua QEMU/KVM ==="
     echo "Bỏ hostfwd theo yêu cầu; mạng user-mode vẫn được bật cho outbound traffic."
     : > "${PROXMOX_QEMU_LOG}"
+    printf 'qemu=%s\naccel=%s\ncpu=%s\ndisk=%s\niso=%s\n' \
+        "${qemu_bin}" "${QEMU_ACCELERATOR}" "${cpu_flags}" \
+        "${PROXMOX_DISK_PATH}" "${PROXMOX_ISO_PATH}" \
+        >> "${PROXMOX_QEMU_LOG}"
     # Boot từ CD-ROM Proxmox ISO để cài đặt; sau khi cài xong có thể đổi thành -boot c.
     # PipeWire không cần thiết cho Proxmox; tắt audio để thiếu client.conf không làm QEMU lỗi.
-    QEMU_AUDIO_DRV=none cpulimit -l 80 -- "${qemu_bin}" \
+    QEMU_AUDIO_DRV=none "${qemu_bin}" \
         "${qemu_accel_args[@]}" \
         -cpu "${cpu_flags}" \
         -smp 2,cores=2 \
@@ -685,10 +723,16 @@ start_proxmox() {
         -vnc 127.0.0.1:0 \
         > "${PROXMOX_QEMU_LOG}" 2>&1 &
     QEMU_PID=$!
-    sleep 3
+    sleep 2
     if ! kill -0 "${QEMU_PID}" 2>/dev/null; then
         echo "QEMU/Proxmox không khởi động được."
-        tail -n 40 "${PROXMOX_QEMU_LOG}" 2>/dev/null || true
+        tail -n 80 "${PROXMOX_QEMU_LOG}" 2>/dev/null || true
+        exit 1
+    fi
+    if ! wait_for_tcp_port 5900 "${QEMU_VNC_TIMEOUT}"; then
+        echo "QEMU process vẫn tồn tại nhưng VNC localhost:5900 chưa mở."
+        tail -n 80 "${PROXMOX_QEMU_LOG}" 2>/dev/null || true
+        kill "${QEMU_PID}" 2>/dev/null || true
         exit 1
     fi
     echo "QEMU/Proxmox đang chạy với PID ${QEMU_PID}; VNC nội bộ localhost:5900."

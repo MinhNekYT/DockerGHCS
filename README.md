@@ -89,7 +89,7 @@ Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM, 
 
 Cấu hình Proxmox bỏ `hostfwd` theo yêu cầu. Trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port 5900–5999; chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. Vì vậy không có chuyển tiếp RDP/3389 tự động; truy cập giao diện Proxmox qua noVNC ở cổng 8006. QEMU vẫn dùng user-mode networking cho kết nối outbound, nhưng không mở host port forwarding.
 
-QEMU được tắt audio bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính; script đã tránh khởi tạo audio và lưu log QEMU tại `/tmp/dockerghcs-proxmox-qemu.log`. Nếu QEMU vẫn dừng, hãy gửi 40 dòng cuối của file log này cùng kết quả `ls -l /dev/kvm`.
+QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Audio được tắt bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính. Script đợi VNC `localhost:5900` và noVNC `8006` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
 
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 
