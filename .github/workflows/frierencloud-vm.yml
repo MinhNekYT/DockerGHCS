@@ -12,15 +12,11 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          # Thêm GPG Key và Repository của Cloudflare
-          sudo mkdir -p --mode=0755 /usr/share/keyrings
-          curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-          echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
-
-          # Cập nhật nguồn và cài đặt toàn bộ công cụ
           sudo apt update
-          sudo apt install -y qemu-system-x86 qemu-utils genisoimage cloudflared p7zip-full wget
-          sudo chmod 666 /dev/kvm
+          sudo apt install -y qemu-system-x86 qemu-utils genisoimage cloudflared p7zip-full wget curl
+          
+          # Chỉ cấp quyền nếu /dev/kvm tồn tại (tránh lỗi thoát chương trình)
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
 
       - name: Generate Unattended Answer File & ISO
         run: |
@@ -31,7 +27,7 @@ jobs:
           fqdn = "pve.lan"
           mailto = "admin@example.com"
           timezone = "Asia/Ho_Chi_Minh"
-          root_password = "12345678"
+          root_password = "YourStrongPassword123"
 
           [network]
           source = "from-dhcp"
@@ -43,22 +39,39 @@ jobs:
 
           genisoimage -J -R -V "PROXMOX-AUTO-INSTALL" -o answer.iso answer.toml
 
-      - name: Download Proxmox ISO & Extract Kernel
+      - name: Download Latest Proxmox ISO & Extract Kernel
         run: |
           qemu-img create -f qcow2 proxmox.qcow2 32G
-          wget -q --show-progress https://download.proxmox.com/iso/proxmox-ve_8.2-1.iso -O proxmox.iso
+          
+          # Tự động lấy tên file ISO mới nhất từ trang chủ để không bao giờ bị lỗi link chết (404)
+          LATEST_ISO=$(curl -s https://download.proxmox.com/iso/ | grep -o 'proxmox-ve_[0-9.]*-[0-9]*\.iso' | tail -n 1)
+          echo "Đang tải phiên bản: $LATEST_ISO"
+          wget -q --show-progress --no-check-certificate "https://download.proxmox.com/iso/$LATEST_ISO" -O proxmox.iso
 
-          7z x proxmox.iso boot/linux26 boot/initrd.img -o./
+          # Cố gắng giải nén, thêm || true để tránh crash nếu có warning từ 7z
+          7z x proxmox.iso boot/linux26 boot/initrd.img -o./ || true
           mv boot/linux26 ./vmlinuz
           mv boot/initrd.img ./initrd.img
           rm -rf boot
 
+      - name: Configure QEMU Acceleration
+        run: |
+          # Nếu Github Runner có hỗ trợ KVM -> dùng KVM. Nếu không -> dùng phần mềm giả lập (chậm hơn nhưng an toàn).
+          if [ -e /dev/kvm ]; then
+            echo "QEMU_ACCEL=-enable-kvm -cpu host" >> $GITHUB_ENV
+            echo "Trạng thái ảo hóa: Hỗ trợ KVM (Tốc độ tối đa)"
+          else
+            echo "QEMU_ACCEL=-cpu qemu64" >> $GITHUB_ENV
+            echo "Trạng thái ảo hóa: KHÔNG hỗ trợ KVM. Tự động chuyển sang chế độ Software Emulation."
+          fi
+
       - name: Run Unattended Proxmox Installation
         run: |
-          echo "=== Bắt đầu cài đặt tự động Proxmox VE (Giới hạn tối đa 8 phút) ==="
+          echo "=== Bắt đầu cài đặt tự động Proxmox VE (Timeout 8 phút) ==="
+          
+          # Truyền trực tiếp biến môi trường QEMU_ACCEL vào lệnh chạy
           timeout 8m qemu-system-x86_64 \
-            -enable-kvm \
-            -cpu host \
+            ${{ env.QEMU_ACCEL }} \
             -smp 2 -m 4096 \
             -kernel vmlinuz \
             -initrd initrd.img \
@@ -68,7 +81,6 @@ jobs:
             -drive file=answer.iso,media=cdrom \
             -nographic \
             -no-reboot || echo "Cài đặt thành công hoặc đã đạt thời gian giới hạn."
-          echo "=== Cài đặt hoàn tất! ==="
 
       - name: Start Cloudflare Tunnel & Boot Proxmox VE
         run: |
@@ -77,7 +89,8 @@ jobs:
           echo "Đang khởi tạo đường truyền Cloudflare Tunnel..."
           URL=""
           for i in {1..30}; do
-            URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflared.log | head -n 1)
+            # Bọc "|| true" để Github Actions không bị sập do Pipefail Exit Code 1 khi grep chưa tìm thấy link
+            URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflared.log | head -n 1 || true)
             if [ -n "$URL" ]; then
               break
             fi
@@ -96,12 +109,13 @@ jobs:
           echo "Mật khẩu: YourStrongPassword123"
           echo "=================================================="
 
+          # Khởi động chính thức vào hệ điều hành Proxmox
           qemu-system-x86_64 \
-            -enable-kvm \
-            -cpu host \
+            ${{ env.QEMU_ACCEL }} \
             -smp 2 -m 4096 \
             -drive file=proxmox.qcow2,if=virtio,format=qcow2 \
             -netdev user,id=net0,hostfwd=tcp::8006-:8006 \
             -device virtio-net-pci,netdev=net0 \
             -nographic
+            
             
