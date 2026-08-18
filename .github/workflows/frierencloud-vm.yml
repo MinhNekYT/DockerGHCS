@@ -1,1 +1,101 @@
+name: Automated Proxmox VE on KVM
 
+on:
+  workflow_dispatch:
+
+jobs:
+  proxmox-kvm:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y qemu-system-x86 qemu-utils genisoimage cloudflared p7zip-full wget
+          sudo chmod 666 /dev/kvm
+
+      - name: Generate Unattended Answer File & ISO
+        run: |
+          cat << 'EOF' > answer.toml
+          [global]
+          keyboard = "en-us"
+          country = "vn"
+          fqdn = "pve.lan"
+          mailto = "admin@example.com"
+          timezone = "Asia/Ho_Chi_Minh"
+          root_password = "YourStrongPassword123"
+
+          [network]
+          source = "from-dhcp"
+
+          [disk-setup]
+          filesystem = "ext4"
+          disk_list = ["vda"]
+          EOF
+
+          genisoimage -J -R -V "PROXMOX-AUTO-INSTALL" -o answer.iso answer.toml
+
+      - name: Download Proxmox ISO & Extract Kernel
+        run: |
+          qemu-img create -f qcow2 proxmox.qcow2 32G
+          wget -q --show-progress https://download.proxmox.com/iso/proxmox-ve_8.2-1.iso -O proxmox.iso
+
+          7z x proxmox.iso boot/linux26 boot/initrd.img -o./
+          mv boot/linux26 ./vmlinuz
+          mv boot/initrd.img ./initrd.img
+          rm -rf boot
+
+      - name: Run Unattended Proxmox Installation
+        run: |
+          echo "=== Bắt đầu cài đặt tự động Proxmox VE (Giới hạn tối đa 8 phút) ==="
+          timeout 8m qemu-system-x86_64 \
+            -enable-kvm \
+            -cpu host \
+            -smp 2 -m 4096 \
+            -kernel vmlinuz \
+            -initrd initrd.img \
+            -append "proxmox-start-auto-installer console=ttyS0" \
+            -drive file=proxmox.qcow2,if=virtio,format=qcow2 \
+            -drive file=proxmox.iso,media=cdrom \
+            -drive file=answer.iso,media=cdrom \
+            -nographic \
+            -no-reboot || echo "Cài đặt thành công hoặc đã đạt thời gian giới hạn."
+          echo "=== Cài đặt hoàn tất! ==="
+
+      - name: Start Cloudflare Tunnel & Boot Proxmox VE
+        run: |
+          cloudflared tunnel --url https://localhost:8006 --no-tls-verify > cloudflared.log 2>&1 &
+          
+          echo "Đang khởi tạo đường truyền Cloudflare Tunnel..."
+          URL=""
+          for i in {1..30}; do
+            URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflared.log | head -n 1)
+            if [ -n "$URL" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "=================================================="
+          if [ -n "$URL" ]; then
+            echo "TRUY CẬP PROXMOX WEB UI TẠI LINK DƯỚI ĐÂY:"
+            echo "$URL"
+          else
+            echo "LỖI: Không lấy được Cloudflare URL. Chi tiết log:"
+            cat cloudflared.log
+          fi
+          echo "Tài khoản: root"
+          echo "Mật khẩu: YourStrongPassword123"
+          echo "=================================================="
+
+          qemu-system-x86_64 \
+            -enable-kvm \
+            -cpu host \
+            -smp 2 -m 4096 \
+            -drive file=proxmox.qcow2,if=virtio,format=qcow2 \
+            -netdev user,id=net0,hostfwd=tcp::8006-:8006 \
+            -device virtio-net-pci,netdev=net0 \
+            -nographic
+            
