@@ -91,13 +91,13 @@ Cấu hình Proxmox bỏ `hostfwd` theo yêu cầu. Trước khi khởi động,
 
 QEMU được tắt audio bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính; script đã tránh khởi tạo audio và lưu log QEMU tại `/tmp/dockerghcs-proxmox-qemu.log`. Nếu QEMU vẫn dừng, hãy gửi 40 dòng cuối của file log này cùng kết quả `ls -l /dev/kvm`.
 
-Mặc định `/mnt/a.img` là raw disk `64G`. Có thể đổi dung lượng trước khi chạy:
+Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 
 ```bash
 sudo PROXMOX_DISK_SIZE=128G ./a.sh
 ```
 
-Host cần có `/dev/kvm`, quyền đọc/ghi KVM và đủ dung lượng trống. Lần cài đầu tiên boot từ ISO; sau khi cài xong, nếu muốn boot ổ đĩa thay vì ISO, đổi `-boot order=d,menu=on` thành `-boot c` trong `a.sh` hoặc xóa ISO sau khi tắt QEMU.
+Host có `/dev/kvm` với quyền đọc/ghi thì script dùng KVM và CPU model `host`; nếu Codespace không cấp KVM, script tự dùng TCG với CPU model `max`, có thể chậm hơn nhưng không dừng chỉ vì thiếu `/dev/kvm`. Cần đủ dung lượng trống cho ISO và raw disk. Lần cài đầu tiên boot từ ISO; sau khi cài xong, nếu muốn boot ổ đĩa thay vì ISO, đổi `-boot order=d,menu=on` thành `-boot c` trong `a.sh` hoặc xóa ISO sau khi tắt QEMU.
 
 ## Giấy phép
 

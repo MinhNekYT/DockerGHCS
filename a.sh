@@ -12,7 +12,7 @@ PROXMOX_ISO_PATH="/mnt/proxmox-ve_9.2-1.iso"
 PROXMOX_ISO_URL="https://enterprise.proxmox.com/iso/proxmox-ve_9.2-1.iso"
 PROXMOX_ISO_SHA256="4e88fe416df9b527624a175f24c9aa07c714d3332afb1ee3dbf3879573ef2c6c"
 PROXMOX_DISK_PATH="/mnt/a.img"
-PROXMOX_DISK_SIZE="${PROXMOX_DISK_SIZE:-64G}"
+PROXMOX_DISK_SIZE="${PROXMOX_DISK_SIZE:-400G}"
 MIN_FREE_KB=$((10 * 1024 * 1024))
 DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
@@ -250,6 +250,19 @@ check_kvm() {
     echo "KVM khả dụng."
 }
 
+check_kvm_for_proxmox() {
+    echo ""
+    echo "=== Kiểm tra accelerator QEMU ==="
+    if [[ -e /dev/kvm && -r /dev/kvm && -w /dev/kvm ]]; then
+        QEMU_ACCELERATOR="kvm"
+        echo "KVM khả dụng; sẽ dùng -cpu host và -enable-kvm."
+    else
+        QEMU_ACCELERATOR="tcg"
+        echo "KVM không khả dụng; sẽ dùng TCG fallback (-cpu max)."
+        echo "Proxmox có thể chạy chậm hơn trong Codespace không hỗ trợ nested virtualization."
+    fi
+}
+
 mount_storage() {
     echo ""
     echo "=== Kiểm tra storage tại /mnt ==="
@@ -474,10 +487,29 @@ download_proxmox_iso() {
 }
 
 ensure_proxmox_disk() {
+    local requested_bytes current_bytes
     echo ""
     echo "=== Chuẩn bị ổ đĩa Proxmox ==="
+    requested_bytes="$(numfmt --from=iec "${PROXMOX_DISK_SIZE}" 2>/dev/null || echo 0)"
+    if [[ ! "${requested_bytes}" =~ ^[0-9]+$ || "${requested_bytes}" -le 0 ]]; then
+        echo "PROXMOX_DISK_SIZE không hợp lệ: ${PROXMOX_DISK_SIZE}"
+        exit 1
+    fi
+
     if [[ -e "${PROXMOX_DISK_PATH}" ]]; then
-        echo "Đã tồn tại ${PROXMOX_DISK_PATH}; giữ nguyên để không mất dữ liệu."
+        current_bytes="$(qemu-img info --output=json "${PROXMOX_DISK_PATH}" 2>/dev/null \
+            | tr -d '[:space:]' \
+            | sed -n 's/.*"virtual-size":\([0-9][0-9]*\).*/\1/p')"
+        if [[ "${current_bytes}" =~ ^[0-9]+$ ]] \
+            && ((current_bytes < requested_bytes)); then
+            echo "Ổ hiện tại nhỏ hơn ${PROXMOX_DISK_SIZE}; đang mở rộng an toàn..."
+            qemu-img resize "${PROXMOX_DISK_PATH}" "${PROXMOX_DISK_SIZE}"
+        elif [[ "${current_bytes}" =~ ^[0-9]+$ ]] \
+            && ((current_bytes > requested_bytes)); then
+            echo "Ổ hiện tại lớn hơn ${PROXMOX_DISK_SIZE}; giữ nguyên, không thu nhỏ để tránh mất dữ liệu."
+        else
+            echo "Đã tồn tại ${PROXMOX_DISK_PATH}; giữ nguyên để không mất dữ liệu."
+        fi
         qemu-img info "${PROXMOX_DISK_PATH}" > /dev/null
     else
         echo "Tạo raw disk ${PROXMOX_DISK_PATH} với dung lượng ${PROXMOX_DISK_SIZE}..."
@@ -582,7 +614,7 @@ start_proxmox() {
     trap 'cleanup_proxmox; exit 143' TERM
     install_proxmox_packages
     stop_stale_processes
-    check_kvm
+    check_kvm_for_proxmox
     mount_storage
     download_proxmox_iso
     ensure_proxmox_disk
@@ -593,11 +625,13 @@ start_proxmox() {
         exit 1
     fi
 
-    local cpu_flags="host,hv_relaxed,hv_spinlocks=0x1fff,hv-passthrough,+pae,+nx,kvm=on"
-    if grep -qi 'GenuineIntel' /proc/cpuinfo 2>/dev/null; then
-        echo "CPU Intel được phát hiện; bỏ các cờ AMD topoext/svm."
-    elif grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
-        cpu_flags+=",+topoext,+svm"
+    local cpu_flags="host"
+    local qemu_accel_args=(-accel "${QEMU_ACCELERATOR}")
+    if [[ "${QEMU_ACCELERATOR}" == "tcg" ]]; then
+        cpu_flags="max"
+        echo "QEMU sẽ dùng CPU model max với TCG fallback."
+    else
+        echo "QEMU sẽ dùng CPU model host với KVM."
     fi
 
     local qemu_bin=""
@@ -630,6 +664,7 @@ start_proxmox() {
     # Boot từ CD-ROM Proxmox ISO để cài đặt; sau khi cài xong có thể đổi thành -boot c.
     # PipeWire không cần thiết cho Proxmox; tắt audio để thiếu client.conf không làm QEMU lỗi.
     QEMU_AUDIO_DRV=none cpulimit -l 80 -- "${qemu_bin}" \
+        "${qemu_accel_args[@]}" \
         -cpu "${cpu_flags}" \
         -smp 2,cores=2 \
         -M q35,usb=on \
@@ -643,7 +678,6 @@ start_proxmox() {
         -device virtio-serial-pci \
         -device virtio-rng-pci \
         -audiodev driver=none,id=noaudio \
-        -enable-kvm \
         -drive "file=${PROXMOX_DISK_PATH},format=raw" \
         "${pflash_args[@]}" \
         -cdrom "${PROXMOX_ISO_PATH}" \
