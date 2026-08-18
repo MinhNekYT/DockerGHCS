@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Cài Docker, chuẩn bị storage/ISO và khởi động dockur/windows.
-# Script này được thiết kế cho GitHub Codespaces hoặc Ubuntu có quyền root,
-# Docker daemon và KVM khả dụng.
+# Cài Docker hoặc QEMU/KVM, chuẩn bị ISO và khởi động Windows, macOS hoặc Proxmox.
+# Script này được thiết kế cho DockerGHCS trên Ubuntu/GitHub Codespaces có quyền root.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WINDOWS_ISO_PATH="/mnt/custom.iso"
 DRIVER_ISO_PATH="/mnt/driver.iso"
 DRIVER_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/virtio-win-0.1.285.iso"
+PROXMOX_ISO_PATH="/mnt/proxmox-ve_9.2-1.iso"
+PROXMOX_ISO_URL="https://enterprise.proxmox.com/iso/proxmox-ve_9.2-1.iso"
+PROXMOX_ISO_SHA256="4e88fe416df9b527624a175f24c9aa07c714d3332afb1ee3dbf3879573ef2c6c"
+PROXMOX_DISK_PATH="/mnt/a.img"
+PROXMOX_DISK_SIZE="${PROXMOX_DISK_SIZE:-64G}"
 MIN_FREE_KB=$((10 * 1024 * 1024))
 DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
+PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
+PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
 
 on_error() {
     local exit_code=$?
@@ -75,7 +81,7 @@ if [[ "${EUID}" -ne 0 ]]; then
     )
     # Codespaces có thể dùng DOCKER_HOST/DOCKER_CONTEXT để trỏ tới daemon bên ngoài.
     # Giữ các biến này khi chuyển sang root, nếu không script sẽ tưởng Docker bị hỏng.
-    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH; do
+    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE; do
         if [[ -n "${!docker_env_name:-}" ]]; then
             sudo_environment+=("${docker_env_name}=${!docker_env_name}")
         fi
@@ -356,13 +362,218 @@ download_isos() {
     echo "Đã tải và kiểm tra xong hai file ISO."
 }
 
+install_proxmox_packages() {
+    echo ""
+    echo "=== Cài package Proxmox/QEMU/KVM ==="
+    apt-get update
+    qemu_packages=(qemu-system-x86 qemu-utils unzip cpulimit python3-pip ovmf novnc websockify)
+    if apt-cache show qemu-kvm > /dev/null 2>&1; then
+        qemu_packages+=(qemu-kvm)
+    fi
+    apt-get install -y "${qemu_packages[@]}"
+
+    if ! command -v qemu-img > /dev/null 2>&1; then
+        echo "Không tìm thấy qemu-img sau khi cài qemu-utils."
+        exit 1
+    fi
+    if ! command -v cpulimit > /dev/null 2>&1; then
+        echo "Không tìm thấy cpulimit sau khi cài đặt."
+        exit 1
+    fi
+}
+
+find_ovmf() {
+    if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd ]]; then
+        OVMF_CODE_PATH="/usr/share/OVMF/OVMF_CODE_4M.fd"
+        OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+    elif [[ -f /usr/share/OVMF/OVMF_CODE.fd ]]; then
+        OVMF_CODE_PATH="/usr/share/OVMF/OVMF_CODE.fd"
+        OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS.ms.fd"
+    elif [[ -f /usr/share/ovmf/OVMF.fd ]]; then
+        OVMF_CODE_PATH="/usr/share/ovmf/OVMF.fd"
+        OVMF_VARS_TEMPLATE=""
+    else
+        echo "Không tìm thấy firmware OVMF sau khi cài package ovmf."
+        exit 1
+    fi
+
+    OVMF_VARS_PATH="/mnt/proxmox-ovmf-vars.fd"
+    if [[ -n "${OVMF_VARS_TEMPLATE}" && -f "${OVMF_VARS_TEMPLATE}" ]]; then
+        if [[ ! -e "${OVMF_VARS_PATH}" ]]; then
+            cp "${OVMF_VARS_TEMPLATE}" "${OVMF_VARS_PATH}"
+        fi
+    fi
+}
+
+download_proxmox_iso() {
+    echo ""
+    echo "=== Chuẩn bị Proxmox VE ISO ==="
+    if [[ -e "${PROXMOX_ISO_PATH}" ]]; then
+        echo "Đã tìm thấy ${PROXMOX_ISO_PATH}; đang kiểm tra SHA256..."
+    else
+        echo "Đang tải Proxmox VE 9.2-1 ISO..."
+        download_file "${PROXMOX_ISO_URL}" "${PROXMOX_ISO_PATH}"
+    fi
+
+    if ! validate_iso_file "${PROXMOX_ISO_PATH}"; then
+        rm -f "${PROXMOX_ISO_PATH}"
+        echo "Proxmox ISO không hợp lệ hoặc tải chưa hoàn tất."
+        exit 1
+    fi
+    if ! printf '%s  %s\n' "${PROXMOX_ISO_SHA256}" "${PROXMOX_ISO_PATH}" \
+        | sha256sum -c - > /dev/null 2>&1; then
+        echo "SHA256 Proxmox ISO không khớp. Đang xóa file để tránh dùng ISO hỏng."
+        rm -f "${PROXMOX_ISO_PATH}"
+        exit 1
+    fi
+    echo "Proxmox ISO hợp lệ."
+}
+
+ensure_proxmox_disk() {
+    echo ""
+    echo "=== Chuẩn bị ổ đĩa Proxmox ==="
+    if [[ -e "${PROXMOX_DISK_PATH}" ]]; then
+        echo "Đã tồn tại ${PROXMOX_DISK_PATH}; giữ nguyên để không mất dữ liệu."
+        qemu-img info "${PROXMOX_DISK_PATH}" > /dev/null
+    else
+        echo "Tạo raw disk ${PROXMOX_DISK_PATH} với dung lượng ${PROXMOX_DISK_SIZE}..."
+        qemu-img create -f raw "${PROXMOX_DISK_PATH}" "${PROXMOX_DISK_SIZE}"
+    fi
+}
+
+start_novnc() {
+    local novnc_proxy=""
+    if command -v novnc_proxy > /dev/null 2>&1; then
+        novnc_proxy="$(command -v novnc_proxy)"
+    elif [[ -x /usr/share/novnc/utils/novnc_proxy ]]; then
+        novnc_proxy="/usr/share/novnc/utils/novnc_proxy"
+    elif [[ -x /usr/share/novnc/utils/novnc_proxy.py ]]; then
+        novnc_proxy="/usr/share/novnc/utils/novnc_proxy.py"
+    fi
+
+    if [[ -z "${novnc_proxy}" ]]; then
+        echo "Không tìm thấy novnc_proxy sau khi cài noVNC/websockify."
+        exit 1
+    fi
+    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)8006$'; then
+        echo "Cổng 8006 đang được sử dụng; không thể khởi động noVNC."
+        exit 1
+    fi
+
+    echo "Khởi động noVNC: --listen 8006 --vnc localhost:5900"
+    nohup "${novnc_proxy}" --listen 8006 --vnc localhost:5900 \
+        > "${PROXMOX_NOVNC_LOG}" 2>&1 &
+    NOVNC_PID=$!
+    sleep 2
+    if ! kill -0 "${NOVNC_PID}" 2>/dev/null; then
+        echo "noVNC không khởi động được."
+        tail -n 30 "${PROXMOX_NOVNC_LOG}" 2>/dev/null || true
+        exit 1
+    fi
+    echo "noVNC đang chạy với PID ${NOVNC_PID}; mở cổng 8006."
+}
+
+cleanup_proxmox() {
+    if [[ -n "${NOVNC_PID:-}" ]] && kill -0 "${NOVNC_PID}" 2>/dev/null; then
+        kill "${NOVNC_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${QEMU_PID:-}" ]] && kill -0 "${QEMU_PID}" 2>/dev/null; then
+        kill "${QEMU_PID}" 2>/dev/null || true
+    fi
+}
+
+start_proxmox() {
+    trap cleanup_proxmox EXIT
+    trap 'cleanup_proxmox; exit 130' INT
+    trap 'cleanup_proxmox; exit 143' TERM
+    install_proxmox_packages
+    check_kvm
+    mount_storage
+    download_proxmox_iso
+    ensure_proxmox_disk
+    find_ovmf
+
+    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)5900$'; then
+        echo "Cổng 5900 đang được sử dụng; hãy dừng VNC process cũ trước khi chạy Proxmox."
+        exit 1
+    fi
+
+    local cpu_flags="host,+topoext,hv_relaxed,hv_spinlocks=0x1fff,hv-passthrough,+pae,+nx,kvm=on"
+    if grep -qi 'GenuineIntel' /proc/cpuinfo 2>/dev/null; then
+        echo "CPU Intel được phát hiện; bỏ +svm vì đây là cờ AMD."
+    elif grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
+        cpu_flags+=",+svm"
+    fi
+
+    local qemu_bin=""
+    if command -v kvm > /dev/null 2>&1; then
+        qemu_bin="$(command -v kvm)"
+    elif command -v qemu-system-x86_64 > /dev/null 2>&1; then
+        qemu_bin="$(command -v qemu-system-x86_64)"
+    else
+        echo "Không tìm thấy kvm hoặc qemu-system-x86_64."
+        exit 1
+    fi
+
+    local pflash_args=(
+        -drive "if=pflash,format=raw,readonly=on,file=${OVMF_CODE_PATH}"
+    )
+    if [[ -n "${OVMF_VARS_TEMPLATE}" && -e "${OVMF_VARS_PATH}" ]]; then
+        pflash_args+=(
+            -drive "if=pflash,format=raw,readonly=off,file=${OVMF_VARS_PATH}"
+        )
+    else
+        pflash_args=(
+            -drive "if=pflash,format=raw,readonly=off,file=${OVMF_CODE_PATH}"
+        )
+    fi
+
+    echo ""
+    echo "=== Khởi động Proxmox qua QEMU/KVM ==="
+    echo "Bỏ hostfwd theo yêu cầu; mạng user-mode vẫn được bật cho outbound traffic."
+    : > "${PROXMOX_QEMU_LOG}"
+    # Boot từ CD-ROM Proxmox ISO để cài đặt; sau khi cài xong có thể đổi thành -boot c.
+    cpulimit -l 80 -- "${qemu_bin}" \
+        -cpu "${cpu_flags}" \
+        -smp 2,cores=2 \
+        -M q35,usb=on \
+        -device usb-tablet \
+        -m 8G \
+        -device virtio-balloon-pci \
+        -vga virtio \
+        -net nic,netdev=n0,model=virtio-net-pci \
+        -netdev user,id=n0 \
+        -boot order=d,menu=on \
+        -device virtio-serial-pci \
+        -device virtio-rng-pci \
+        -enable-kvm \
+        -drive "file=${PROXMOX_DISK_PATH},format=raw" \
+        "${pflash_args[@]}" \
+        -cdrom "${PROXMOX_ISO_PATH}" \
+        -uuid e47ddb84-fb4d-46f9-b531-14bb15156336 \
+        -vnc :0 \
+        > "${PROXMOX_QEMU_LOG}" 2>&1 &
+    QEMU_PID=$!
+    sleep 3
+    if ! kill -0 "${QEMU_PID}" 2>/dev/null; then
+        echo "QEMU/Proxmox không khởi động được."
+        tail -n 40 "${PROXMOX_QEMU_LOG}" 2>/dev/null || true
+        exit 1
+    fi
+    echo "QEMU/Proxmox đang chạy với PID ${QEMU_PID}; VNC nội bộ localhost:5900."
+    start_novnc
+    echo "noVNC: cổng 8006; không có hostfwd cổng 3389."
+    wait "${QEMU_PID}"
+}
+
 select_os() {
     echo ""
     echo "=== Chọn hệ điều hành cần cài ==="
     echo "1) Windows"
     echo "2) macOS"
+    echo "3) Proxmox (QEMU/KVM)"
     while true; do
-        read -r -p "Hãy nhập 1 để cài Windows hoặc 2 để cài macOS: " os_choice
+        read -r -p "Hãy nhập 1 để cài Windows, 2 để cài macOS hoặc 3 để cài Proxmox: " os_choice
         case "${os_choice}" in
             1)
                 OS_NAME="Windows"
@@ -374,22 +585,33 @@ select_os() {
                 COMPOSE_FILE="${SCRIPT_DIR}/macos.yaml"
                 break
                 ;;
+            3)
+                OS_NAME="Proxmox"
+                COMPOSE_FILE=""
+                break
+                ;;
             *)
-                echo "Lựa chọn không hợp lệ. Vui lòng nhập 1 hoặc 2."
+                echo "Lựa chọn không hợp lệ. Vui lòng nhập 1, 2 hoặc 3."
                 ;;
         esac
     done
 
-    if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    if [[ "${OS_NAME}" != "Proxmox" && ! -f "${COMPOSE_FILE}" ]]; then
         echo "Không tìm thấy file cấu hình cho ${OS_NAME}: ${COMPOSE_FILE}"
         exit 1
     fi
 }
 
+select_os
+
+if [[ "${OS_NAME}" == "Proxmox" ]]; then
+    start_proxmox
+    exit 0
+fi
+
 install_docker
 check_kvm
 mount_storage
-select_os
 
 if [[ "${OS_NAME}" == "Windows" ]]; then
     echo ""
