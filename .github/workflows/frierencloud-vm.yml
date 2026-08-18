@@ -12,6 +12,12 @@ jobs:
 
       - name: Install System Dependencies
         run: |
+          # Thêm GPG Key và Repository của Cloudflare
+          sudo mkdir -p --mode=0755 /usr/share/keyrings
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+
+          # Cập nhật nguồn và cài đặt toàn bộ công cụ
           sudo apt update
           sudo apt install -y qemu-system-x86 qemu-utils genisoimage cloudflared p7zip-full wget
           sudo chmod 666 /dev/kvm
@@ -25,7 +31,7 @@ jobs:
           fqdn = "pve.lan"
           mailto = "admin@example.com"
           timezone = "Asia/Ho_Chi_Minh"
-          root_password = "YourStrongPassword123"
+          root_password = "12345678"
 
           [network]
           source = "from-dhcp"
