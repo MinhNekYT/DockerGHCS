@@ -738,6 +738,8 @@ start_proxmox() {
     echo "QEMU/Proxmox đang chạy với PID ${QEMU_PID}; VNC nội bộ localhost:5900."
     start_novnc
     echo "noVNC: cổng 8006; không có hostfwd cổng 3389."
+    echo "Paste không cần clipboard hệ điều hành: mở panel Clipboard trong noVNC, nhập text rồi bấm Send."
+    echo "Clipboard chỉ được dùng khi bạn chủ động Copy/Send nội dung trong panel noVNC."
     wait "${QEMU_PID}"
 }
 

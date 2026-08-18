@@ -91,6 +91,10 @@ Cấu hình Proxmox bỏ `hostfwd` theo yêu cầu. Trước khi khởi động,
 
 QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Audio được tắt bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính. Script đợi VNC `localhost:5900` và noVNC `8006` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
 
+### Dán text vào Proxmox qua noVNC
+
+noVNC đã có panel **Clipboard** riêng. Để dán text vào Proxmox mà không cần cấp quyền clipboard cho trình duyệt hoặc dùng clipboard hệ điều hành, hãy mở panel **Clipboard**, nhập hoặc dán text vào ô của panel rồi bấm **Send**. Cách này gửi nội dung qua API VNC đến máy ảo; nó không yêu cầu Ctrl+V trực tiếp trên canvas. Chỉ dùng nút **Copy/Send** trong panel khi bạn chủ động muốn truyền hoặc nhận nội dung clipboard.
+
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 
 ```bash
