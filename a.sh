@@ -17,6 +17,8 @@ MIN_FREE_KB=$((10 * 1024 * 1024))
 DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
 PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
+WINDOWS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/windows.yaml"
+MACOS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/macos.yaml"
 
 on_error() {
     local exit_code=$?
@@ -566,6 +568,60 @@ start_proxmox() {
     wait "${QEMU_PID}"
 }
 
+download_compose_file() {
+    local url="$1"
+    local destination="$2"
+    local temporary_file
+
+    temporary_file="$(mktemp "${destination}.part.XXXXXX")"
+    echo "Không tìm thấy ${destination}; đang tải từ raw GitHub..."
+    if command -v curl > /dev/null 2>&1; then
+        if ! curl -fL --retry 3 --retry-delay 2 --progress-bar "${url}" -o "${temporary_file}"; then
+            rm -f "${temporary_file}"
+            echo "Không thể tải ${url}"
+            exit 1
+        fi
+    elif command -v wget > /dev/null 2>&1; then
+        if ! wget --progress=dot:giga -O "${temporary_file}" "${url}"; then
+            rm -f "${temporary_file}"
+            echo "Không thể tải ${url}"
+            exit 1
+        fi
+    else
+        rm -f "${temporary_file}"
+        echo "Cần curl hoặc wget để tải file cấu hình Docker Compose."
+        exit 1
+    fi
+
+    if [[ ! -s "${temporary_file}" ]] || ! grep -q '^services:' "${temporary_file}"; then
+        rm -f "${temporary_file}"
+        echo "File YAML tải về không hợp lệ: ${url}"
+        exit 1
+    fi
+    mv -f "${temporary_file}" "${destination}"
+    echo "Đã tải ${destination}."
+}
+
+ensure_compose_file() {
+    [[ "${OS_NAME}" == "Proxmox" ]] && return 0
+    if [[ -f "${COMPOSE_FILE}" ]]; then
+        return 0
+    fi
+
+    case "${OS_NAME}" in
+        Windows)
+            download_compose_file "${WINDOWS_YAML_URL}" "${COMPOSE_FILE}"
+            ;;
+        macOS)
+            download_compose_file "${MACOS_YAML_URL}" "${COMPOSE_FILE}"
+            ;;
+        *)
+            echo "Không xác định được hệ điều hành đã chọn: ${OS_NAME}"
+            exit 1
+            ;;
+    esac
+}
+
 select_os() {
     echo ""
     echo "=== Chọn hệ điều hành cần cài ==="
@@ -596,13 +652,10 @@ select_os() {
         esac
     done
 
-    if [[ "${OS_NAME}" != "Proxmox" && ! -f "${COMPOSE_FILE}" ]]; then
-        echo "Không tìm thấy file cấu hình cho ${OS_NAME}: ${COMPOSE_FILE}"
-        exit 1
-    fi
 }
 
 select_os
+ensure_compose_file
 
 if [[ "${OS_NAME}" == "Proxmox" ]]; then
     start_proxmox

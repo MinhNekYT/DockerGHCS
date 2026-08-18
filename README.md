@@ -18,6 +18,18 @@ chmod +x a.sh
 
 Script sẽ hỏi xác nhận `y/n`, không phân biệt chữ hoa chữ thường. Sau đó script hỏi link ISO Windows, tải ISO thành `/mnt/custom.iso` và tải VirtIO driver thành `/mnt/driver.iso`. Nếu `/mnt/custom.iso` đã tồn tại, script dừng để tránh ghi đè bản Windows trước đó.
 
+## Cài từ repository khác
+
+Bạn có thể chạy script trong một repository khác bằng cách sao chép đoạn lệnh sau:
+
+```bash
+wget -O a.sh https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/a.sh
+chmod +x a.sh
+bash a.sh
+```
+
+Khi chạy, `a.sh` kiểm tra file cấu hình trong cùng thư mục với script. Nếu thiếu `windows.yaml` hoặc `macos.yaml`, script tự tải file tương ứng từ DockerGHCS bằng các URL raw chính thức. Vì vậy repository khác không cần chép sẵn các file YAML.
+
 ## Cấu hình hiện tại
 
 | Thành phần | Giá trị |
