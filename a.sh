@@ -91,16 +91,6 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 INSTALL_USER="${WINDOWS_INSTALL_USER:-${SUDO_USER:-}}"
 
-if [[ -f "${SCRIPT_DIR}/docker-compose.yaml" ]]; then
-    COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yaml"
-elif [[ -f "${SCRIPT_DIR}/docker-compose.yml" ]]; then
-    COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
-else
-    echo "Không tìm thấy docker-compose.yaml hoặc docker-compose.yml trong thư mục script:"
-    echo "  ${SCRIPT_DIR}"
-    exit 1
-fi
-
 install_docker() {
     echo ""
     echo "=== Kiểm tra Docker hiện có ==="
@@ -366,31 +356,67 @@ download_isos() {
     echo "Đã tải và kiểm tra xong hai file ISO."
 }
 
+select_os() {
+    echo ""
+    echo "=== Chọn hệ điều hành cần cài ==="
+    echo "1) Windows"
+    echo "2) macOS"
+    while true; do
+        read -r -p "Hãy nhập 1 để cài Windows hoặc 2 để cài macOS: " os_choice
+        case "${os_choice}" in
+            1)
+                OS_NAME="Windows"
+                COMPOSE_FILE="${SCRIPT_DIR}/windows.yaml"
+                break
+                ;;
+            2)
+                OS_NAME="macOS"
+                COMPOSE_FILE="${SCRIPT_DIR}/macos.yaml"
+                break
+                ;;
+            *)
+                echo "Lựa chọn không hợp lệ. Vui lòng nhập 1 hoặc 2."
+                ;;
+        esac
+    done
+
+    if [[ ! -f "${COMPOSE_FILE}" ]]; then
+        echo "Không tìm thấy file cấu hình cho ${OS_NAME}: ${COMPOSE_FILE}"
+        exit 1
+    fi
+}
+
 install_docker
 check_kvm
 mount_storage
+select_os
 
-echo ""
-read -r -p "Bạn muốn cài bản Windows nào? Hãy dán link ISO Windows mà bạn muốn: " windows_iso_url
-windows_iso_url="${windows_iso_url//$'\r'/}"
-if [[ -z "${windows_iso_url}" ]]; then
-    echo "Link ISO không được để trống."
-    exit 1
+if [[ "${OS_NAME}" == "Windows" ]]; then
+    echo ""
+    read -r -p "Bạn muốn cài bản Windows nào? Hãy dán link ISO Windows mà bạn muốn: " windows_iso_url
+    windows_iso_url="${windows_iso_url//$'\r'/}"
+    if [[ -z "${windows_iso_url}" ]]; then
+        echo "Link ISO không được để trống."
+        exit 1
+    fi
+    if [[ "${windows_iso_url}" != http://* && "${windows_iso_url}" != https://* ]]; then
+        echo "Link ISO phải bắt đầu bằng http:// hoặc https://."
+        exit 1
+    fi
+    download_isos "${windows_iso_url}"
+else
+    echo ""
+    echo "Đã chọn macOS. macos.yaml không dùng USERNAME/PASSWORD và không cần Windows ISO."
+    echo "Lần khởi động đầu tiên sẽ tải bộ cài macOS từ dockur/macos."
 fi
-if [[ "${windows_iso_url}" != http://* && "${windows_iso_url}" != https://* ]]; then
-    echo "Link ISO phải bắt đầu bằng http:// hoặc https://."
-    exit 1
-fi
-
-download_isos "${windows_iso_url}"
 
 cd "${SCRIPT_DIR}"
 echo ""
-echo "=== Kiểm tra Docker Compose ==="
+echo "=== Kiểm tra Docker Compose cho ${OS_NAME} ==="
 docker compose -f "${COMPOSE_FILE}" config -q
-echo "=== Khởi động Docker Compose ==="
-echo "Chạy lệnh 1: docker compose up -d"
+echo "=== Khởi động Docker Compose cho ${OS_NAME} ==="
+echo "Chạy lệnh 1: docker compose -f ${COMPOSE_FILE} up -d"
 docker compose -f "${COMPOSE_FILE}" up -d
 echo ""
-echo "Chạy lệnh 2: docker compose up"
+echo "Chạy lệnh 2: docker compose -f ${COMPOSE_FILE} up"
 docker compose -f "${COMPOSE_FILE}" up
