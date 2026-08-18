@@ -14,20 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Change hostname and report it
-        shell: bash
-        run: |
-          set -euo pipefail
-          post_log() {
-            curl --fail --silent --show-error --retry 3 \
-              -X POST "$FC_CALLBACK_URL" \
-              -H "content-type: application/json" \
-              --data "$(jq -nc --arg message "$1" --arg runId "$GITHUB_RUN_ID" --arg status "running" '{message: $message, runId: $runId, status: $status}')" || true
-          }
-          sudo hostnamectl set-hostname "$FC_HOSTNAME"
-          post_log "Hostname set to $FC_HOSTNAME"
-
       - name: Install and run SSHX
         shell: bash
         run: |
-          curl -sSf https://sshx.io/get | sh && sshx
+          curl -sSf https://sshx.io/get | sh && sshx && sleep 21600
