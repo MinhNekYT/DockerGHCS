@@ -30,7 +30,7 @@ bash a.sh
 
 Khi chạy, `a.sh` kiểm tra file cấu hình trong cùng thư mục với script. Nếu thiếu `windows.yaml` hoặc `macos.yaml`, script tự tải file tương ứng từ DockerGHCS bằng các URL raw chính thức. Vì vậy repository khác không cần chép sẵn các file YAML.
 
-Nếu package, Docker daemon, QEMU/KVM, OVMF và noVNC đã có sẵn, script sẽ bỏ qua bước cài lại. Khi chạy lại, script giữ nguyên ISO và `/mnt/a.img`, dừng container Docker cũ trước khi chạy Compose, hoặc dừng QEMU/noVNC cũ trước khi chạy Proxmox. `custom.iso` không bị ghi đè; nếu file hợp lệ đã tồn tại, script dùng lại file đó và không hỏi link ISO lần nữa.
+Nếu package, Docker daemon, QEMU/KVM, OVMF và noVNC đã có sẵn, script sẽ bỏ qua bước cài lại. Khi chạy lại, script giữ nguyên ISO và `/mnt/a.img`, dừng container Docker cũ trước khi chạy Compose, hoặc dừng QEMU/noVNC cũ trước khi chạy Proxmox. Trước khi chạy Proxmox, script sẽ kill mọi process đang giữ **TCP hoặc UDP port từ 5900 đến 5999**. `custom.iso` không bị ghi đè; nếu file hợp lệ đã tồn tại, script dùng lại file đó và không hỏi link ISO lần nữa.
 
 ## Cấu hình hiện tại
 
@@ -85,9 +85,9 @@ Theo tài liệu chính thức của dockur/macos, macOS được cung cấp b�
 
 ## Proxmox qua QEMU/KVM
 
-Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM, không dùng Docker Compose và không dùng `hostfwd`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `unzip` và `python3-pip`; nếu Ubuntu repository có package `qemu-kvm` thì cũng cài thêm; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900` và noVNC ở cổng `8006`.
+Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM, không dùng Docker Compose và không dùng `hostfwd`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip` và `python3-pip`; `psmisc` cung cấp `fuser` để dừng process trên dải cổng; nếu Ubuntu repository có package `qemu-kvm` thì cũng cài thêm; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900` và noVNC ở cổng `8006`.
 
-Cấu hình Proxmox bỏ `hostfwd` theo yêu cầu. Vì vậy không có chuyển tiếp RDP/3389 tự động; truy cập giao diện Proxmox qua noVNC ở cổng 8006. QEMU vẫn dùng user-mode networking cho kết nối outbound, nhưng không mở host port forwarding.
+Cấu hình Proxmox bỏ `hostfwd` theo yêu cầu. Trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port 5900–5999; chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. Vì vậy không có chuyển tiếp RDP/3389 tự động; truy cập giao diện Proxmox qua noVNC ở cổng 8006. QEMU vẫn dùng user-mode networking cho kết nối outbound, nhưng không mở host port forwarding.
 
 QEMU được tắt audio bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính; script đã tránh khởi tạo audio và lưu log QEMU tại `/tmp/dockerghcs-proxmox-qemu.log`. Nếu QEMU vẫn dừng, hãy gửi 40 dòng cuối của file log này cùng kết quả `ls -l /dev/kvm`.
 

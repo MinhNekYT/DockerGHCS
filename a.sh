@@ -383,6 +383,9 @@ proxmox_tools_ready() {
         || [[ -x /usr/share/novnc/utils/novnc_proxy.py ]]; then
         novnc_ready=1
     fi
+    if ! command -v fuser > /dev/null 2>&1; then
+        return 1
+    fi
     if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd \
         || -f /usr/share/OVMF/OVMF_CODE.fd \
         || -f /usr/share/ovmf/OVMF.fd ]]; then
@@ -407,7 +410,7 @@ install_proxmox_packages() {
     echo ""
     echo "=== Cài package Proxmox/QEMU/KVM ==="
     apt-get update
-    qemu_packages=(qemu-system-x86 qemu-utils unzip cpulimit python3-pip ovmf novnc websockify)
+    qemu_packages=(qemu-system-x86 qemu-utils unzip cpulimit python3-pip ovmf novnc websockify psmisc)
     if apt-cache show qemu-kvm > /dev/null 2>&1; then
         qemu_packages+=(qemu-kvm)
     fi
@@ -514,7 +517,38 @@ start_novnc() {
     echo "noVNC đang chạy với PID ${NOVNC_PID}; mở cổng 8006."
 }
 
+stop_port_range_5900_5999() {
+    local protocol port pid pids
+    for protocol in tcp udp; do
+        for ((port = 5900; port <= 5999; port++)); do
+            pids="$(fuser -n "${protocol}" "${port}" 2>/dev/null || true)"
+            for pid in ${pids}; do
+                [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+                [[ "${pid}" == "$$" || "${pid}" == "${PPID}" ]] && continue
+                echo "Dừng PID ${pid} đang giữ ${protocol}/${port}."
+                kill "${pid}" 2>/dev/null || true
+            done
+        done
+    done
+    sleep 1
+
+    for protocol in tcp udp; do
+        for ((port = 5900; port <= 5999; port++)); do
+            pids="$(fuser -n "${protocol}" "${port}" 2>/dev/null || true)"
+            for pid in ${pids}; do
+                [[ "${pid}" =~ ^[0-9]+$ ]] || continue
+                [[ "${pid}" == "$$" || "${pid}" == "${PPID}" ]] && continue
+                if kill -0 "${pid}" 2>/dev/null; then
+                    echo "Buộc dừng PID ${pid} còn giữ ${protocol}/${port}."
+                    kill -KILL "${pid}" 2>/dev/null || true
+                fi
+            done
+        done
+    done
+}
+
 stop_stale_processes() {
+    stop_port_range_5900_5999
     local pattern pid
     local patterns=(
         'novnc_proxy.*--listen[[:space:]]+8006.*--vnc[[:space:]]+localhost:5900'
