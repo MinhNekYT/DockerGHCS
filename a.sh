@@ -323,22 +323,28 @@ download_isos() {
     local windows_created=0
 
     if [[ -e "${WINDOWS_ISO_PATH}" ]]; then
-        echo "Đã tồn tại custom.iso trong /mnt."
-        echo "Để tránh cài đè bản Windows khác, hãy tạo Codespace mới rồi chạy lại script."
-        exit 1
-    fi
-
-    echo ""
-    echo "=== Tải Windows ISO ==="
-    echo "Đang tải Windows ISO vào ${WINDOWS_ISO_PATH}..."
-    if ! download_file "${windows_iso_url}" "${WINDOWS_ISO_PATH}"; then
-        echo "Không thể tải Windows ISO."
-        exit 1
-    fi
-    windows_created=1
-    if ! validate_iso_file "${WINDOWS_ISO_PATH}"; then
-        rm -f "${WINDOWS_ISO_PATH}"
-        exit 1
+        echo "Đã tồn tại ${WINDOWS_ISO_PATH}; giữ nguyên và không ghi đè."
+        if ! validate_iso_file "${WINDOWS_ISO_PATH}"; then
+            echo "custom.iso hiện có không hợp lệ hoặc tải dở. Hãy xóa file này rồi chạy lại với link ISO mới."
+            exit 1
+        fi
+    else
+        if [[ -z "${windows_iso_url}" ]]; then
+            echo "Chưa có custom.iso và chưa cung cấp link Windows ISO."
+            exit 1
+        fi
+        echo ""
+        echo "=== Tải Windows ISO ==="
+        echo "Đang tải Windows ISO vào ${WINDOWS_ISO_PATH}..."
+        if ! download_file "${windows_iso_url}" "${WINDOWS_ISO_PATH}"; then
+            echo "Không thể tải Windows ISO."
+            exit 1
+        fi
+        windows_created=1
+        if ! validate_iso_file "${WINDOWS_ISO_PATH}"; then
+            rm -f "${WINDOWS_ISO_PATH}"
+            exit 1
+        fi
     fi
 
     if [[ -e "${DRIVER_ISO_PATH}" ]]; then
@@ -364,7 +370,40 @@ download_isos() {
     echo "Đã tải và kiểm tra xong hai file ISO."
 }
 
+proxmox_tools_ready() {
+    local qemu_ready=0
+    local novnc_ready=0
+    local ovmf_ready=0
+
+    if command -v kvm > /dev/null 2>&1 || command -v qemu-system-x86_64 > /dev/null 2>&1; then
+        qemu_ready=1
+    fi
+    if command -v novnc_proxy > /dev/null 2>&1 \
+        || [[ -x /usr/share/novnc/utils/novnc_proxy ]] \
+        || [[ -x /usr/share/novnc/utils/novnc_proxy.py ]]; then
+        novnc_ready=1
+    fi
+    if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd \
+        || -f /usr/share/OVMF/OVMF_CODE.fd \
+        || -f /usr/share/ovmf/OVMF.fd ]]; then
+        ovmf_ready=1
+    fi
+
+    [[ "${qemu_ready}" == "1" \
+        && "${novnc_ready}" == "1" \
+        && "${ovmf_ready}" == "1" ]] \
+        && command -v qemu-img > /dev/null 2>&1 \
+        && command -v cpulimit > /dev/null 2>&1
+}
+
 install_proxmox_packages() {
+    if proxmox_tools_ready; then
+        echo ""
+        echo "=== QEMU/KVM, OVMF và noVNC đã sẵn sàng ==="
+        echo "Bỏ qua cài package; chạy tiếp với các file/ổ đĩa hiện có."
+        return 0
+    fi
+
     echo ""
     echo "=== Cài package Proxmox/QEMU/KVM ==="
     apt-get update
@@ -475,6 +514,25 @@ start_novnc() {
     echo "noVNC đang chạy với PID ${NOVNC_PID}; mở cổng 8006."
 }
 
+stop_stale_processes() {
+    local pattern pid
+    local patterns=(
+        'novnc_proxy.*--listen[[:space:]]+8006.*--vnc[[:space:]]+localhost:5900'
+        'qemu.*proxmox-ve_9\.2-1\.iso'
+        'qemu.*dockerghcs-proxmox'
+        'cpulimit.*qemu.*a\.img'
+    )
+
+    for pattern in "${patterns[@]}"; do
+        while read -r pid; do
+            [[ -z "${pid}" || "${pid}" == "$$" || "${pid}" == "${PPID}" ]] && continue
+            echo "Dừng tiến trình cũ PID ${pid}: ${pattern}"
+            kill "${pid}" 2>/dev/null || true
+        done < <(pgrep -f "${pattern}" 2>/dev/null || true)
+    done
+    sleep 1
+}
+
 cleanup_proxmox() {
     if [[ -n "${NOVNC_PID:-}" ]] && kill -0 "${NOVNC_PID}" 2>/dev/null; then
         kill "${NOVNC_PID}" 2>/dev/null || true
@@ -489,6 +547,7 @@ start_proxmox() {
     trap 'cleanup_proxmox; exit 130' INT
     trap 'cleanup_proxmox; exit 143' TERM
     install_proxmox_packages
+    stop_stale_processes
     check_kvm
     mount_storage
     download_proxmox_iso
@@ -669,18 +728,23 @@ check_kvm
 mount_storage
 
 if [[ "${OS_NAME}" == "Windows" ]]; then
-    echo ""
-    read -r -p "Bạn muốn cài bản Windows nào? Hãy dán link ISO Windows mà bạn muốn: " windows_iso_url
-    windows_iso_url="${windows_iso_url//$'\r'/}"
-    if [[ -z "${windows_iso_url}" ]]; then
-        echo "Link ISO không được để trống."
-        exit 1
+    if [[ -e "${WINDOWS_ISO_PATH}" ]]; then
+        echo "Đã có ${WINDOWS_ISO_PATH}; bỏ qua hỏi link và tải lại Windows ISO."
+        download_isos ""
+    else
+        echo ""
+        read -r -p "Bạn muốn cài bản Windows nào? Hãy dán link ISO Windows mà bạn muốn: " windows_iso_url
+        windows_iso_url="${windows_iso_url//$'\r'/}"
+        if [[ -z "${windows_iso_url}" ]]; then
+            echo "Link ISO không được để trống."
+            exit 1
+        fi
+        if [[ "${windows_iso_url}" != http://* && "${windows_iso_url}" != https://* ]]; then
+            echo "Link ISO phải bắt đầu bằng http:// hoặc https://."
+            exit 1
+        fi
+        download_isos "${windows_iso_url}"
     fi
-    if [[ "${windows_iso_url}" != http://* && "${windows_iso_url}" != https://* ]]; then
-        echo "Link ISO phải bắt đầu bằng http:// hoặc https://."
-        exit 1
-    fi
-    download_isos "${windows_iso_url}"
 else
     echo ""
     echo "Đã chọn macOS. macos.yaml không dùng USERNAME/PASSWORD và không cần Windows ISO."
@@ -691,6 +755,8 @@ cd "${SCRIPT_DIR}"
 echo ""
 echo "=== Kiểm tra Docker Compose cho ${OS_NAME} ==="
 docker compose -f "${COMPOSE_FILE}" config -q
+echo "=== Dừng container/tiến trình cũ của ${OS_NAME} ==="
+docker compose -f "${COMPOSE_FILE}" down --remove-orphans || true
 echo "=== Khởi động Docker Compose cho ${OS_NAME} ==="
 echo "Chạy lệnh 1: docker compose -f ${COMPOSE_FILE} up -d"
 docker compose -f "${COMPOSE_FILE}" up -d
