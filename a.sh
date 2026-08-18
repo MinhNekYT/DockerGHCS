@@ -500,11 +500,11 @@ start_proxmox() {
         exit 1
     fi
 
-    local cpu_flags="host,+topoext,hv_relaxed,hv_spinlocks=0x1fff,hv-passthrough,+pae,+nx,kvm=on"
+    local cpu_flags="host,hv_relaxed,hv_spinlocks=0x1fff,hv-passthrough,+pae,+nx,kvm=on"
     if grep -qi 'GenuineIntel' /proc/cpuinfo 2>/dev/null; then
-        echo "CPU Intel được phát hiện; bỏ +svm vì đây là cờ AMD."
+        echo "CPU Intel được phát hiện; bỏ các cờ AMD topoext/svm."
     elif grep -qi 'AuthenticAMD' /proc/cpuinfo 2>/dev/null; then
-        cpu_flags+=",+svm"
+        cpu_flags+=",+topoext,+svm"
     fi
 
     local qemu_bin=""
@@ -535,7 +535,8 @@ start_proxmox() {
     echo "Bỏ hostfwd theo yêu cầu; mạng user-mode vẫn được bật cho outbound traffic."
     : > "${PROXMOX_QEMU_LOG}"
     # Boot từ CD-ROM Proxmox ISO để cài đặt; sau khi cài xong có thể đổi thành -boot c.
-    cpulimit -l 80 -- "${qemu_bin}" \
+    # PipeWire không cần thiết cho Proxmox; tắt audio để thiếu client.conf không làm QEMU lỗi.
+    QEMU_AUDIO_DRV=none cpulimit -l 80 -- "${qemu_bin}" \
         -cpu "${cpu_flags}" \
         -smp 2,cores=2 \
         -M q35,usb=on \
@@ -548,12 +549,13 @@ start_proxmox() {
         -boot order=d,menu=on \
         -device virtio-serial-pci \
         -device virtio-rng-pci \
+        -audiodev driver=none,id=noaudio \
         -enable-kvm \
         -drive "file=${PROXMOX_DISK_PATH},format=raw" \
         "${pflash_args[@]}" \
         -cdrom "${PROXMOX_ISO_PATH}" \
         -uuid e47ddb84-fb4d-46f9-b531-14bb15156336 \
-        -vnc :0 \
+        -vnc 127.0.0.1:0 \
         > "${PROXMOX_QEMU_LOG}" 2>&1 &
     QEMU_PID=$!
     sleep 3

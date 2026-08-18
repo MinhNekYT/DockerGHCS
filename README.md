@@ -87,6 +87,8 @@ Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM, 
 
 Cấu hình Proxmox bỏ `hostfwd` theo yêu cầu. Vì vậy không có chuyển tiếp RDP/3389 tự động; truy cập giao diện Proxmox qua noVNC ở cổng 8006. QEMU vẫn dùng user-mode networking cho kết nối outbound, nhưng không mở host port forwarding.
 
+QEMU được tắt audio bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính; script đã tránh khởi tạo audio và lưu log QEMU tại `/tmp/dockerghcs-proxmox-qemu.log`. Nếu QEMU vẫn dừng, hãy gửi 40 dòng cuối của file log này cùng kết quả `ls -l /dev/kvm`.
+
 Mặc định `/mnt/a.img` là raw disk `64G`. Có thể đổi dung lượng trước khi chạy:
 
 ```bash
