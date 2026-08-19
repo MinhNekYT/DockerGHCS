@@ -269,45 +269,9 @@ exec /usr/bin/google-chrome "${CHROME_FLAGS[@]}" "$@"
 EOF
 chmod 0755 /usr/local/bin/google-chrome-xfce
 
-cat > /usr/local/bin/xfce4-vnc-start <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-VNC_USER="${INSTALL_USER}"
-VNC_HOME="${INSTALL_HOME}"
-VNC_SERVER="${VNC_SERVER_BIN}"
-VNC_DISPLAY="${VNC_DISPLAY}"
-VNC_GEOMETRY="${VNC_GEOMETRY}"
-VNC_DEPTH="${VNC_DEPTH}"
-
-if [[ "\${EUID}" -eq 0 ]]; then
-    exec runuser -u "\${VNC_USER}" -- env HOME="\${VNC_HOME}" USER="\${VNC_USER}" LOGNAME="\${VNC_USER}" "\$0" "\$@"
-fi
-if [[ "\${USER}" != "\${VNC_USER}" ]]; then
-    echo "Hãy chạy lệnh này bằng user \${VNC_USER} hoặc dùng sudo." >&2
-    exit 1
-fi
-if [[ ! -f "\${HOME}/.vnc/passwd" ]]; then
-    echo "Chưa có VNC password. Chạy: xfce4-vnc-setup-auth" >&2
-    exit 1
-fi
-"\${VNC_SERVER}" -kill "\${VNC_DISPLAY}" >/dev/null 2>&1 || true
-exec "\${VNC_SERVER}" "\${VNC_DISPLAY}" -geometry "\${VNC_GEOMETRY}" -depth "\${VNC_DEPTH}" -localhost no
-EOF
-chmod 0755 /usr/local/bin/xfce4-vnc-start
-
-cat > /usr/local/bin/xfce4-vnc-setup-auth <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-VNC_USER="${INSTALL_USER}"
-VNC_HOME="${INSTALL_HOME}"
-if [[ "\${EUID}" -eq 0 ]]; then
-    exec runuser -u "\${VNC_USER}" -- env HOME="\${VNC_HOME}" USER="\${VNC_USER}" LOGNAME="\${VNC_USER}" "\$0" "\$@"
-fi
-mkdir -p "\${HOME}/.vnc"
-chmod 700 "\${HOME}/.vnc"
-exec vncpasswd "\${HOME}/.vnc/passwd"
-EOF
-chmod 0755 /usr/local/bin/xfce4-vnc-setup-auth
+command -v startxfce4 >/dev/null 2>&1
+command -v google-chrome >/dev/null 2>&1
+google-chrome --version
 
 NOVNC_PROXY_BIN=""
 if command -v novnc_proxy >/dev/null 2>&1; then
@@ -316,51 +280,9 @@ elif [[ -x /usr/share/novnc/utils/novnc_proxy ]]; then
     NOVNC_PROXY_BIN="/usr/share/novnc/utils/novnc_proxy"
 fi
 if [[ -z "${NOVNC_PROXY_BIN}" ]]; then
-    echo "Không tìm thấy novnc_proxy. Hãy cài package novnc trước." >&2
+    echo "Không tìm thấy novnc_proxy sau khi cài package novnc." >&2
     exit 1
 fi
-
-cat > /usr/local/bin/xfce4-novnc-start <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-VNC_USER="${INSTALL_USER}"
-VNC_HOME="${INSTALL_HOME}"
-NOVNC_PROXY="${NOVNC_PROXY_BIN}"
-NOVNC_PORT="${NOVNC_PORT}"
-VNC_PORT="${VNC_PORT}"
-NOVNC_LOG="${NOVNC_LOG}"
-NOVNC_PID_FILE="${NOVNC_PID_FILE}"
-
-if [[ "\${EUID}" -eq 0 ]]; then
-    exec runuser -u "\${VNC_USER}" -- env HOME="\${VNC_HOME}" USER="\${VNC_USER}" LOGNAME="\${VNC_USER}" "\$0" "\$@"
-fi
-if [[ "\${USER}" != "\${VNC_USER}" ]]; then
-    echo "Hãy chạy lệnh này bằng user \${VNC_USER} hoặc dùng sudo." >&2
-    exit 1
-fi
-mkdir -p "\${HOME}/.vnc"
-if [[ -f "\${NOVNC_PID_FILE}" ]]; then
-    old_pid="\$(cat "\${NOVNC_PID_FILE}" 2>/dev/null || true)"
-    if [[ "\${old_pid}" =~ ^[0-9]+$ ]]; then
-        kill "\${old_pid}" 2>/dev/null || true
-    fi
-fi
-: > "\${NOVNC_LOG}"
-nohup "\${NOVNC_PROXY}" --listen "\${NOVNC_PORT}" --vnc "127.0.0.1:\${VNC_PORT}" \
-    >> "\${NOVNC_LOG}" 2>&1 &
-echo \$! > "\${NOVNC_PID_FILE}"
-sleep 2
-if ! kill -0 "\$(cat "\${NOVNC_PID_FILE}")" 2>/dev/null; then
-    echo "noVNC không khởi động được; xem \${NOVNC_LOG}." >&2
-    exit 1
-fi
-echo "noVNC đang chạy tại cổng \${NOVNC_PORT}; VNC origin 127.0.0.1:\${VNC_PORT}."
-EOF
-chmod 0755 /usr/local/bin/xfce4-novnc-start
-
-command -v startxfce4 >/dev/null 2>&1
-command -v google-chrome >/dev/null 2>&1
-google-chrome --version
 
 cleanup_vnc() {
     local exit_code=$?
@@ -400,11 +322,38 @@ EOF
     start)
         if [[ ! -f "${VNC_DIR}/passwd" ]]; then
             echo "Chưa có VNC password; hãy tạo password ngay bây giờ."
-            /usr/local/bin/xfce4-vnc-setup-auth
+            runuser -u "${INSTALL_USER}" -- env \
+                HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+                vncpasswd "${VNC_DIR}/passwd"
+            chown "${INSTALL_USER}:${INSTALL_GROUP}" "${VNC_DIR}/passwd"
+            chmod 600 "${VNC_DIR}/passwd"
         fi
+
         trap cleanup_vnc INT TERM EXIT
-        /usr/local/bin/xfce4-vnc-start
-        /usr/local/bin/xfce4-novnc-start
+        runuser -u "${INSTALL_USER}" -- env \
+            HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+            "${VNC_SERVER_BIN}" -kill "${VNC_DISPLAY}" >/dev/null 2>&1 || true
+        runuser -u "${INSTALL_USER}" -- env \
+            HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+            "${VNC_SERVER_BIN}" "${VNC_DISPLAY}" \
+            -geometry "${VNC_GEOMETRY}" -depth "${VNC_DEPTH}" -localhost no
+
+        runuser -u "${INSTALL_USER}" -- env \
+            HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+            touch "${NOVNC_LOG}"
+        chmod 644 "${NOVNC_LOG}"
+        : > "${NOVNC_LOG}"
+        runuser -u "${INSTALL_USER}" -- env \
+            HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+            "${NOVNC_PROXY_BIN}" --listen "${NOVNC_PORT}" --vnc "127.0.0.1:${VNC_PORT}" \
+            >> "${NOVNC_LOG}" 2>&1 &
+        NOVNC_PID=$!
+        printf '%s\n' "${NOVNC_PID}" > "${NOVNC_PID_FILE}"
+        sleep 2
+        if ! kill -0 "${NOVNC_PID}" 2>/dev/null; then
+            echo "noVNC không khởi động được; xem ${NOVNC_LOG}." >&2
+            exit 1
+        fi
         echo "XFCE4 + VNC + noVNC đang chạy ở foreground."
         echo "VNC port: ${VNC_PORT}"
         echo "noVNC host port: ${NOVNC_PORT}"
