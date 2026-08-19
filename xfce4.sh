@@ -275,6 +275,11 @@ export DISPLAY
 export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-XFCE}"
 export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-xfce}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+    export XDG_RUNTIME_DIR="/tmp/runtime-${USER}"
+    mkdir -p "${XDG_RUNTIME_DIR}"
+    chmod 700 "${XDG_RUNTIME_DIR}"
+fi
 
 if [[ "${EUID}" -eq 0 ]]; then
     echo "Không nên chạy Chrome bằng root trong XFCE4/VNC." >&2
@@ -289,19 +294,37 @@ CHROME_FLAGS=(
     --disable-dev-shm-usage
     --ozone-platform=x11
     --disable-gpu
+    --disable-gpu-compositing
+    --use-gl=swiftshader
     --no-first-run
     --no-default-browser-check
 )
 if [[ "${CHROME_NO_SANDBOX:-0}" == "1" ]]; then
-    CHROME_FLAGS+=(--no-sandbox)
+    CHROME_FLAGS+=(--no-sandbox --disable-setuid-sandbox)
 fi
-exec /usr/bin/google-chrome "${CHROME_FLAGS[@]}" "$@"
+
+set +e
+/usr/bin/google-chrome "${CHROME_FLAGS[@]}" "$@"
+chrome_status=$?
+set -e
+if ((chrome_status == 0)); then
+    exit 0
+fi
+if [[ "${CHROME_NO_SANDBOX:-0}" != "1" ]]; then
+    echo "Chrome thoát bất thường (mã ${chrome_status}); thử lại với sandbox fallback cho môi trường VNC/Codespaces." >&2
+    exec /usr/bin/google-chrome \
+        "${CHROME_FLAGS[@]}" \
+        --no-sandbox --disable-setuid-sandbox "$@"
+fi
+exit "${chrome_status}"
 EOF
 chmod 0755 /usr/local/bin/google-chrome-xfce
 
 command -v startxfce4 >/dev/null 2>&1
 command -v google-chrome >/dev/null 2>&1
-google-chrome --version
+runuser -u "${INSTALL_USER}" -- env \
+    HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+    google-chrome --version
 
 NOVNC_PROXY_BIN=""
 if command -v novnc_proxy >/dev/null 2>&1; then

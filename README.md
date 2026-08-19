@@ -161,6 +161,14 @@ Nếu chưa có VNC password, script sẽ yêu cầu tạo password ẩn bên tr
 
 Lệnh `./xfce4.sh -start` vẫn được giữ như alias tương thích, nhưng không cần dùng. Script chạy ở foreground; nhấn **Ctrl+C** để dừng toàn bộ VNC, noVNC và XFCE4. Không có lệnh quản lý riêng cho password, stop hoặc status. Có thể đổi cấu hình bằng `VNC_DISPLAY=:2`, `NOVNC_PORT=6081`, `VNC_GEOMETRY=1920x1080` và `VNC_DEPTH=24` khi chạy script. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC riêng ở cổng `8888` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
 
+Nếu Google Chrome crash trong VNC, hãy mở Chrome bằng launcher đã cấu hình:
+
+```bash
+google-chrome-xfce
+```
+
+Launcher dùng X11, profile riêng, `--disable-dev-shm-usage`, SwiftShader và GPU compositing tắt. Nếu Chrome thoát bất thường, launcher tự thử lại một lần với `--no-sandbox`/`--disable-setuid-sandbox`, nhưng vẫn từ chối chạy Chrome bằng root. Không nên chạy trực tiếp `sudo google-chrome`; hãy chạy dưới user desktop trong phiên XFCE4.
+
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 
 ```bash
