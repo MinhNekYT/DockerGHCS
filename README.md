@@ -13,9 +13,9 @@ Tạo Codespace hoặc Ubuntu host có tối thiểu 4 CPU, 16 GB RAM và dung l
 Nếu chỉ cần cài Google Chrome Stable và môi trường desktop XFCE4 trong Codespace, chạy script độc lập sau:
 
 ```bash
-wget -O install-chrome-xfce.sh https://raw.githubusercontent.com/MinhNekYT/WindowsGHCS/main/install-chrome-xfce.sh
-chmod +x install-chrome-xfce.sh
-./install-chrome-xfce.sh
+wget -O xfce4.sh https://raw.githubusercontent.com/MinhNekYT/WindowsGHCS/main/xfce4.sh
+chmod +x xfce4.sh
+./xfce4.sh
 ```
 
 Script yêu cầu quyền `sudo`, chỉ hỗ trợ hệ Debian/Ubuntu trên kiến trúc `x86_64`, có thể chạy lại an toàn và không cài display manager. Việc cài package không tự tạo GUI tương tác trong Codespace; để sử dụng desktop cần khởi động thêm TightVNC và expose port phù hợp.
