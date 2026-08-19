@@ -28,7 +28,7 @@ chmod +x a.sh
 bash a.sh
 ```
 
-Khi chạy, `a.sh` kiểm tra file cấu hình trong cùng thư mục với script. Nếu thiếu `windows.yaml` hoặc `macos.yaml`, script tự tải file tương ứng từ DockerGHCS bằng các URL raw chính thức. Vì vậy repository khác không cần chép sẵn các file YAML.
+Khi chạy, `a.sh` kiểm tra file cấu hình trong cùng thư mục với script. Nếu thiếu `windows.yaml` hoặc `macos.yaml`, script tự tải file tương ứng từ DockerGHCS bằng các URL raw chính thức. Vì vậy repository khác không cần chép sẵn các file YAML. Riêng `xfce4.sh` có thể chạy độc lập trong Ubuntu/Codespace và tự bỏ qua package đã cài.
 
 Nếu package, Docker daemon, QEMU/KVM, OVMF và noVNC đã có sẵn, script sẽ bỏ qua bước cài lại. Khi chạy lại, script giữ nguyên ISO và `/mnt/a.img`, dừng container Docker cũ trước khi chạy Compose, hoặc dừng QEMU/noVNC cũ trước khi chạy Proxmox. Trước khi chạy Proxmox, script sẽ kill mọi process đang giữ **TCP hoặc UDP port từ 5900 đến 5999**. `custom.iso` không bị ghi đè; nếu file hợp lệ đã tồn tại, script dùng lại file đó và không hỏi link ISO lần nữa.
 
@@ -151,15 +151,15 @@ chmod +x xfce4.sh
 ./xfce4.sh
 ```
 
-Script `xfce4.sh` cài XFCE4, ưu tiên TigerVNC và dùng TightVNC làm fallback, cùng Google Chrome Stable. Script tạo cấu hình `~/.vnc/xstartup` để khởi động đúng phiên XFCE4 qua D-Bus, nhưng không lưu sẵn VNC password và không tự bật desktop session. Sau khi tải xong mọi thứ, chạy bằng user desktop:
+Script `xfce4.sh` cài XFCE4, ưu tiên TigerVNC và dùng TightVNC làm fallback, cùng Google Chrome Stable. Script tạo cấu hình `~/.vnc/xstartup` để khởi động đúng phiên XFCE4 qua D-Bus. Khi chạy không có tham số, script sẽ cài các package còn thiếu rồi tự động khởi động VNC, noVNC và XFCE4; những lần chạy sau sẽ bỏ qua package đã có và chạy ngay.
 
 ```bash
-./xfce4.sh -start
+./xfce4.sh
 ```
 
-Lệnh `-start` sẽ yêu cầu tạo VNC password nếu chưa có, sau đó tự khởi động phiên XFCE4 qua VNC và noVNC. Mặc định phiên là `:1`, tương ứng TCP port `5901`, còn noVNC dùng host port `8888`. Hãy mở cổng `8888` trong Codespaces/Ubuntu host để truy cập noVNC từ máy client.
+Nếu chưa có VNC password, script sẽ yêu cầu tạo password ẩn bên trong lần khởi động đầu tiên. Mặc định phiên là `:1`, tương ứng TCP port `5901`, còn noVNC của XFCE4 dùng host port `6080`. Hãy mở cổng `6080` trong Codespaces/Ubuntu host để truy cập noVNC từ máy client.
 
-Khi `./xfce4.sh -start` đang chạy ở foreground, script sẽ tự yêu cầu tạo VNC password nếu chưa có. Nhấn **Ctrl+C** để dừng toàn bộ VNC, noVNC và XFCE4. Không có lệnh quản lý riêng cho password, stop hoặc status. Có thể đổi cấu hình bằng `VNC_DISPLAY=:2`, `NOVNC_PORT=6081`, `VNC_GEOMETRY=1920x1080` và `VNC_DEPTH=24` khi chạy script. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC ở cổng `8888` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
+Lệnh `./xfce4.sh -start` vẫn được giữ như alias tương thích, nhưng không cần dùng. Script chạy ở foreground; nhấn **Ctrl+C** để dừng toàn bộ VNC, noVNC và XFCE4. Không có lệnh quản lý riêng cho password, stop hoặc status. Có thể đổi cấu hình bằng `VNC_DISPLAY=:2`, `NOVNC_PORT=6081`, `VNC_GEOMETRY=1920x1080` và `VNC_DEPTH=24` khi chạy script. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC riêng ở cổng `8888` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
 
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 

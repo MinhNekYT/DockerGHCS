@@ -10,11 +10,12 @@ INSTALL_USER="${INSTALL_USER:-${SUDO_USER:-${_REMOTE_USER:-${USER:-}}}}"
 VNC_DISPLAY="${VNC_DISPLAY:-:1}"
 VNC_GEOMETRY="${VNC_GEOMETRY:-1920x1080}"
 VNC_DEPTH="${VNC_DEPTH:-24}"
-NOVNC_PORT="${NOVNC_PORT:-8888}"
-ACTION="install"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+ACTION="start"
 
 case "${1:-}" in
     "")
+        ACTION="start"
         ;;
     -start|--start)
         ACTION="start"
@@ -23,13 +24,13 @@ case "${1:-}" in
     -h|--help)
         cat <<'EOF'
 Usage:
-  ./xfce4.sh             Install XFCE4, VNC, noVNC and Google Chrome
-  ./xfce4.sh -start      Start VNC + noVNC + XFCE4
-  Press Ctrl+C while `-start` is running to stop VNC, noVNC and XFCE4.
+  ./xfce4.sh             Install missing packages, then start VNC + noVNC + XFCE4
+  ./xfce4.sh -start      Alias for the default behavior
+  Press Ctrl+C while the script is running to stop VNC, noVNC and XFCE4.
 
 Environment:
   VNC_DISPLAY=:1       VNC display; :1 maps to TCP 5901
-  NOVNC_PORT=8888      noVNC HTTP/WebSocket port
+  NOVNC_PORT=6080      noVNC HTTP/WebSocket port
   VNC_GEOMETRY=1920x1080
   VNC_DEPTH=24
 EOF
@@ -160,36 +161,59 @@ sudo -u "${INSTALL_USER}" mkdir -p "${VNC_DIR}"
 chown "${INSTALL_USER}:${INSTALL_GROUP}" "${VNC_DIR}"
 chmod 700 "${VNC_DIR}"
 
-echo "=== Chuẩn bị apt/dpkg ==="
-dpkg --configure -a
-apt-get -f install -y
-apt-get update -o Acquire::Retries=3
-
-echo "=== Cài XFCE4 và thành phần X11 ==="
-VNC_PACKAGES=()
-if apt-cache show tigervnc-standalone-server >/dev/null 2>&1 \
-    && apt-cache show tigervnc-tools >/dev/null 2>&1; then
-    VNC_PACKAGES+=(tigervnc-standalone-server tigervnc-tools)
+packages_ready=1
+if command -v tigervncserver >/dev/null 2>&1; then
     VNC_SERVER_BIN="tigervncserver"
-else
-    VNC_PACKAGES+=(tightvncserver)
+elif command -v tightvncserver >/dev/null 2>&1; then
     VNC_SERVER_BIN="tightvncserver"
+else
+    VNC_SERVER_BIN="tigervncserver"
+    packages_ready=0
+fi
+for required_command in startxfce4 vncpasswd google-chrome; do
+    if ! command -v "${required_command}" >/dev/null 2>&1; then
+        packages_ready=0
+    fi
+done
+if ! command -v novnc_proxy >/dev/null 2>&1 \
+    && [[ ! -x /usr/share/novnc/utils/novnc_proxy ]] \
+    && [[ ! -x /usr/share/novnc/utils/novnc_proxy.py ]]; then
+    packages_ready=0
 fi
 
-apt-get install -y --no-install-recommends \
-    xfce4 \
-    xfce4-goodies \
-    xfce4-terminal \
-    dbus-x11 \
-    x11-xserver-utils \
-    xauth \
-    xvfb \
-    ca-certificates \
-    curl \
-    gnupg \
-    novnc \
-    websockify \
-    "${VNC_PACKAGES[@]}"
+if ((packages_ready == 0)); then
+    echo "=== Cài các package XFCE4/VNC/noVNC còn thiếu ==="
+    dpkg --configure -a
+    apt-get -f install -y
+    apt-get update -o Acquire::Retries=3
+
+    VNC_PACKAGES=()
+    if apt-cache show tigervnc-standalone-server >/dev/null 2>&1 \
+        && apt-cache show tigervnc-tools >/dev/null 2>&1; then
+        VNC_PACKAGES+=(tigervnc-standalone-server tigervnc-tools)
+        VNC_SERVER_BIN="tigervncserver"
+    else
+        VNC_PACKAGES+=(tightvncserver)
+        VNC_SERVER_BIN="tightvncserver"
+    fi
+
+    apt-get install -y --no-install-recommends \
+        xfce4 \
+        xfce4-goodies \
+        xfce4-terminal \
+        dbus-x11 \
+        x11-xserver-utils \
+        xauth \
+        xvfb \
+        ca-certificates \
+        curl \
+        gnupg \
+        novnc \
+        websockify \
+        "${VNC_PACKAGES[@]}"
+else
+    echo "XFCE4, VNC, noVNC, websockify và Google Chrome đã có; bỏ qua apt install."
+fi
 
 if ! command -v "${VNC_SERVER_BIN}" >/dev/null 2>&1; then
     echo "Không tìm thấy VNC server sau khi cài: ${VNC_SERVER_BIN}" >&2
@@ -284,6 +308,8 @@ if command -v novnc_proxy >/dev/null 2>&1; then
     NOVNC_PROXY_BIN="$(command -v novnc_proxy)"
 elif [[ -x /usr/share/novnc/utils/novnc_proxy ]]; then
     NOVNC_PROXY_BIN="/usr/share/novnc/utils/novnc_proxy"
+elif [[ -x /usr/share/novnc/utils/novnc_proxy.py ]]; then
+    NOVNC_PROXY_BIN="/usr/share/novnc/utils/novnc_proxy.py"
 fi
 if [[ -z "${NOVNC_PROXY_BIN}" ]]; then
     echo "Không tìm thấy novnc_proxy sau khi cài package novnc." >&2
