@@ -644,10 +644,12 @@ prepare_proxmox_auto_install_iso() {
         "${root_password_hash}")"
     if [[ -e "${PROXMOX_AUTO_ISO_PATH}" && -f "${PROXMOX_AUTO_META_PATH}" ]] \
         && printf '%s' "${desired_meta}" | cmp -s - "${PROXMOX_AUTO_META_PATH}"; then
-        echo "Đã tìm thấy auto-install ISO phù hợp; giữ nguyên."
-        validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"
-        PROXMOX_ISO_BOOT_PATH="${PROXMOX_AUTO_ISO_PATH}"
-        return 0
+        if validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"; then
+            echo "Đã tìm thấy auto-install ISO phù hợp; giữ nguyên."
+            PROXMOX_ISO_BOOT_PATH="${PROXMOX_AUTO_ISO_PATH}"
+            return 0
+        fi
+        echo "Auto-install ISO hiện tại không hợp lệ; đang tạo lại." >&2
     fi
     rm -f "${PROXMOX_AUTO_ISO_PATH}" "${PROXMOX_AUTO_META_PATH}" \
         "${PROXMOX_ANSWER_PATH}" "${PROXMOX_FIRST_BOOT_PATH}"
@@ -661,7 +663,7 @@ prepare_proxmox_auto_install_iso() {
 
     cat > "${PROXMOX_ANSWER_PATH}" <<EOF
 [global]
-keyboard = "us"
+keyboard = "en-us"
 country = "${escaped_country}"
 fqdn = "${escaped_fqdn}"
 timezone = "${escaped_timezone}"
@@ -726,13 +728,22 @@ EOF
     chmod 700 "${PROXMOX_FIRST_BOOT_PATH}"
 
     echo "=== Tạo Proxmox unattended ISO ==="
-    proxmox-auto-install-assistant prepare-iso \
+    rm -f "${PROXMOX_AUTO_ISO_PATH}"
+    if ! proxmox-auto-install-assistant prepare-iso \
         "${PROXMOX_ISO_PATH}" \
         --fetch-from iso \
         --answer-file "${PROXMOX_ANSWER_PATH}" \
         --on-first-boot "${PROXMOX_FIRST_BOOT_PATH}" \
-        --output "${PROXMOX_AUTO_ISO_PATH}"
-    validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"
+        --output "${PROXMOX_AUTO_ISO_PATH}"; then
+        rm -f "${PROXMOX_AUTO_ISO_PATH}" "${PROXMOX_AUTO_META_PATH}"
+        echo "Không thể tạo Proxmox unattended ISO; answer file hoặc assistant báo lỗi." >&2
+        exit 1
+    fi
+    if ! validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"; then
+        rm -f "${PROXMOX_AUTO_ISO_PATH}" "${PROXMOX_AUTO_META_PATH}"
+        echo "Auto-install ISO được tạo nhưng không hợp lệ; đã xóa file lỗi." >&2
+        exit 1
+    fi
     printf '%s' "${desired_meta}" > "${PROXMOX_AUTO_META_PATH}"
     chmod 600 "${PROXMOX_AUTO_META_PATH}"
     PROXMOX_ISO_BOOT_PATH="${PROXMOX_AUTO_ISO_PATH}"
