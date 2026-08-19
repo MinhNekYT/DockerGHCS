@@ -152,6 +152,10 @@ VNC_XSTARTUP="${VNC_DIR}/xstartup"
 VNC_CONFIG="${VNC_DIR}/config"
 NOVNC_LOG="${VNC_DIR}/novnc.log"
 NOVNC_PID_FILE="${VNC_DIR}/novnc.pid"
+PULSE_RUNTIME_PATH="${VNC_DIR}/pulse"
+PULSE_SOCKET="${PULSE_RUNTIME_PATH}/native"
+PULSE_LOG="${VNC_DIR}/pulseaudio.log"
+PULSE_STARTED=0
 
 export HOME="${INSTALL_HOME}"
 export USER="${INSTALL_USER}"
@@ -170,7 +174,7 @@ else
     VNC_SERVER_BIN="tigervncserver"
     packages_ready=0
 fi
-for required_command in startxfce4 vncpasswd google-chrome; do
+for required_command in startxfce4 vncpasswd google-chrome pulseaudio pactl; do
     if ! command -v "${required_command}" >/dev/null 2>&1; then
         packages_ready=0
     fi
@@ -210,9 +214,17 @@ if ((packages_ready == 0)); then
         gnupg \
         novnc \
         websockify \
+        pulseaudio \
+        pulseaudio-utils \
+        alsa-utils \
         "${VNC_PACKAGES[@]}"
 else
-    echo "XFCE4, VNC, noVNC, websockify và Google Chrome đã có; bỏ qua apt install."
+    echo "XFCE4, VNC, noVNC, websockify, PulseAudio và Google Chrome đã có; bỏ qua apt install."
+fi
+
+if ! command -v pulseaudio >/dev/null 2>&1 || ! command -v pactl >/dev/null 2>&1; then
+    echo "Không tìm thấy PulseAudio/pactl sau khi cài đặt." >&2
+    exit 1
 fi
 
 if ! command -v "${VNC_SERVER_BIN}" >/dev/null 2>&1; then
@@ -238,6 +250,9 @@ runtime_dir="${XDG_RUNTIME_DIR:-/tmp/runtime-${USER}}"
 mkdir -p "${runtime_dir}"
 chmod 700 "${runtime_dir}"
 export XDG_RUNTIME_DIR="${runtime_dir}"
+export PULSE_RUNTIME_PATH="${HOME}/.vnc/pulse"
+export PULSE_SERVER="unix:${PULSE_RUNTIME_PATH}/native"
+mkdir -p "${PULSE_RUNTIME_PATH}"
 
 if command -v dbus-launch >/dev/null 2>&1; then
     exec dbus-launch --exit-with-session startxfce4
@@ -339,6 +354,40 @@ if [[ -z "${NOVNC_PROXY_BIN}" ]]; then
     exit 1
 fi
 
+start_pulseaudio() {
+    echo "=== Khởi động PulseAudio cho XFCE4/VNC ==="
+    runuser -u "${INSTALL_USER}" -- env \
+        HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+        XDG_RUNTIME_DIR="${VNC_DIR}/runtime" \
+        PULSE_RUNTIME_PATH="${PULSE_RUNTIME_PATH}" \
+        pulseaudio --check >/dev/null 2>&1 || true
+    runuser -u "${INSTALL_USER}" -- env \
+        HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+        XDG_RUNTIME_DIR="${VNC_DIR}/runtime" \
+        PULSE_RUNTIME_PATH="${PULSE_RUNTIME_PATH}" \
+        pulseaudio --start --daemonize=yes --exit-idle-time=-1 \
+        --log-target="file:${PULSE_LOG}"
+
+    local elapsed=0
+    while ((elapsed < 15)); do
+        if [[ -S "${PULSE_SOCKET}" ]] \
+            && runuser -u "${INSTALL_USER}" -- env \
+                HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+                XDG_RUNTIME_DIR="${VNC_DIR}/runtime" \
+                PULSE_RUNTIME_PATH="${PULSE_RUNTIME_PATH}" \
+                PULSE_SERVER="unix:${PULSE_SOCKET}" pactl info >/dev/null 2>&1; then
+            PULSE_STARTED=1
+            echo "PulseAudio đã sẵn sàng: ${PULSE_SOCKET}"
+            return 0
+        fi
+        sleep 1
+        ((elapsed += 1))
+    done
+    echo "PulseAudio không mở socket ${PULSE_SOCKET}." >&2
+    tail -n 50 "${PULSE_LOG}" 2>/dev/null || true
+    return 1
+}
+
 wait_for_tcp_port() {
     local port="$1"
     local timeout_seconds="${2:-30}"
@@ -358,6 +407,14 @@ wait_for_tcp_port() {
 cleanup_vnc() {
     local exit_code=$?
     trap - INT TERM EXIT
+    if [[ "${PULSE_STARTED:-0}" == "1" ]]; then
+        runuser -u "${INSTALL_USER}" -- env \
+            HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+            XDG_RUNTIME_DIR="${VNC_DIR}/runtime" \
+            PULSE_RUNTIME_PATH="${PULSE_RUNTIME_PATH}" \
+            PULSE_SERVER="unix:${PULSE_SOCKET}" \
+            pulseaudio --kill >/dev/null 2>&1 || true
+    fi
     if [[ -f "${NOVNC_PID_FILE}" ]]; then
         local novnc_pid
         novnc_pid="$(cat "${NOVNC_PID_FILE}" 2>/dev/null || true)"
@@ -401,11 +458,15 @@ EOF
         fi
 
         trap cleanup_vnc INT TERM EXIT
+        start_pulseaudio
         runuser -u "${INSTALL_USER}" -- env \
             HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
             "${VNC_SERVER_BIN}" -kill "${VNC_DISPLAY}" >/dev/null 2>&1 || true
         runuser -u "${INSTALL_USER}" -- env \
             HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+            XDG_RUNTIME_DIR="${VNC_DIR}/runtime" \
+            PULSE_RUNTIME_PATH="${PULSE_RUNTIME_PATH}" \
+            PULSE_SERVER="unix:${PULSE_SOCKET}" \
             "${VNC_SERVER_BIN}" "${VNC_DISPLAY}" \
             -geometry "${VNC_GEOMETRY}" -depth "${VNC_DEPTH}" -localhost no
 
@@ -436,7 +497,9 @@ EOF
         echo "XFCE4 + VNC + noVNC đang chạy ở foreground."
         echo "VNC port: ${VNC_PORT}"
         echo "noVNC host port: ${NOVNC_PORT}"
-        echo "Nhấn Ctrl+C để dừng toàn bộ VNC, noVNC và XFCE4."
+        echo "PulseAudio socket: ${PULSE_SOCKET}"
+        echo "Lưu ý: noVNC chuẩn truyền RFB (hình ảnh, bàn phím, chuột); PulseAudio đã sẵn sàng cho desktop/client audio nhưng noVNC không tự truyền âm thanh qua RFB."
+        echo "Nhấn Ctrl+C để dừng toàn bộ VNC, noVNC, PulseAudio và XFCE4."
         while :; do
             sleep 3600
         done

@@ -28,6 +28,10 @@ MIN_FREE_KB=$((10 * 1024 * 1024))
 DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
 PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
+PROXMOX_PULSE_LOG="/tmp/dockerghcs-proxmox-pulseaudio.log"
+PROXMOX_PULSE_SOCKET="/run/pulse/native"
+PROXMOX_PULSE_PID_FILE="/run/dockerghcs-pulseaudio.pid"
+PROXMOX_PULSE_STARTED=0
 NOVNC_PORT="${NOVNC_PORT:-8888}"
 PROXMOX_GUEST_PORT="${PROXMOX_GUEST_PORT:-8006}"
 QEMU_VNC_TIMEOUT="${QEMU_VNC_TIMEOUT:-60}"
@@ -465,6 +469,7 @@ proxmox_tools_ready() {
     local qemu_ready=0
     local novnc_ready=0
     local ovmf_ready=0
+    local pulse_ready=0
 
     if command -v kvm > /dev/null 2>&1 || command -v qemu-system-x86_64 > /dev/null 2>&1; then
         qemu_ready=1
@@ -473,6 +478,9 @@ proxmox_tools_ready() {
         || [[ -x /usr/share/novnc/utils/novnc_proxy ]] \
         || [[ -x /usr/share/novnc/utils/novnc_proxy.py ]]; then
         novnc_ready=1
+    fi
+    if command -v pulseaudio > /dev/null 2>&1 && command -v pactl > /dev/null 2>&1; then
+        pulse_ready=1
     fi
     if ! command -v fuser > /dev/null 2>&1; then
         return 1
@@ -485,7 +493,8 @@ proxmox_tools_ready() {
 
     [[ "${qemu_ready}" == "1" \
         && "${novnc_ready}" == "1" \
-        && "${ovmf_ready}" == "1" ]] \
+        && "${ovmf_ready}" == "1" \
+        && "${pulse_ready}" == "1" ]] \
         && command -v qemu-img > /dev/null 2>&1 \
         && command -v cpulimit > /dev/null 2>&1
 }
@@ -493,7 +502,7 @@ proxmox_tools_ready() {
 install_proxmox_packages() {
     if proxmox_tools_ready; then
         echo ""
-        echo "=== QEMU/KVM, OVMF và noVNC đã sẵn sàng ==="
+        echo "=== QEMU/KVM, OVMF, PulseAudio và noVNC đã sẵn sàng ==="
         echo "Bỏ qua cài package; chạy tiếp với các file/ổ đĩa hiện có."
         return 0
     fi
@@ -501,7 +510,7 @@ install_proxmox_packages() {
     echo ""
     echo "=== Cài package Proxmox/QEMU/KVM ==="
     apt-get update
-    qemu_packages=(qemu-system-x86 qemu-utils unzip cpulimit python3-pip ovmf novnc websockify psmisc)
+    qemu_packages=(qemu-system-x86 qemu-system-gui qemu-utils unzip cpulimit python3-pip ovmf novnc websockify psmisc pulseaudio pulseaudio-utils)
     if apt-cache show qemu-kvm > /dev/null 2>&1; then
         qemu_packages+=(qemu-kvm)
     fi
@@ -515,6 +524,45 @@ install_proxmox_packages() {
         echo "Không tìm thấy cpulimit sau khi cài đặt."
         exit 1
     fi
+    if ! command -v pulseaudio > /dev/null 2>&1 || ! command -v pactl > /dev/null 2>&1; then
+        echo "Không tìm thấy PulseAudio sau khi cài đặt."
+        exit 1
+    fi
+}
+
+start_proxmox_pulseaudio() {
+    if [[ -S "${PROXMOX_PULSE_SOCKET}" ]] \
+        && PULSE_SERVER="unix:${PROXMOX_PULSE_SOCKET}" pactl info >/dev/null 2>&1; then
+        echo "PulseAudio system socket đã sẵn sàng: ${PROXMOX_PULSE_SOCKET}"
+        return 0
+    fi
+
+    echo "=== Khởi động PulseAudio cho QEMU/noVNC ==="
+    install -d -m 0755 /run/pulse
+    rm -f "${PROXMOX_PULSE_PID_FILE}"
+    : > "${PROXMOX_PULSE_LOG}"
+    if ! pulseaudio --system --daemonize=yes --disallow-exit --exit-idle-time=-1 \
+        --pid-file="${PROXMOX_PULSE_PID_FILE}" \
+        --log-target="file:${PROXMOX_PULSE_LOG}"; then
+        echo "Không thể khởi động PulseAudio system mode." >&2
+        tail -n 50 "${PROXMOX_PULSE_LOG}" 2>/dev/null || true
+        return 1
+    fi
+    PROXMOX_PULSE_STARTED=1
+
+    local elapsed=0
+    while ((elapsed < 15)); do
+        if [[ -S "${PROXMOX_PULSE_SOCKET}" ]] \
+            && PULSE_SERVER="unix:${PROXMOX_PULSE_SOCKET}" pactl info >/dev/null 2>&1; then
+            echo "PulseAudio đã sẵn sàng: ${PROXMOX_PULSE_SOCKET}"
+            return 0
+        fi
+        sleep 1
+        ((elapsed += 1))
+    done
+    echo "PulseAudio không mở socket ${PROXMOX_PULSE_SOCKET}." >&2
+    tail -n 50 "${PROXMOX_PULSE_LOG}" 2>/dev/null || true
+    return 1
 }
 
 find_ovmf() {
@@ -885,6 +933,15 @@ stop_stale_processes() {
 }
 
 cleanup_proxmox() {
+    if [[ "${PROXMOX_PULSE_STARTED:-0}" == "1" ]] \
+        && [[ -f "${PROXMOX_PULSE_PID_FILE}" ]]; then
+        local pulse_pid
+        pulse_pid="$(cat "${PROXMOX_PULSE_PID_FILE}" 2>/dev/null || true)"
+        if [[ "${pulse_pid}" =~ ^[0-9]+$ ]]; then
+            kill "${pulse_pid}" 2>/dev/null || true
+        fi
+        rm -f "${PROXMOX_PULSE_PID_FILE}"
+    fi
     if [[ -n "${NOVNC_PID:-}" ]] && kill -0 "${NOVNC_PID}" 2>/dev/null; then
         kill "${NOVNC_PID}" 2>/dev/null || true
     fi
@@ -911,6 +968,7 @@ start_proxmox() {
         prepare_proxmox_auto_install_iso
     fi
     find_ovmf
+    start_proxmox_pulseaudio
 
     if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)5900$'; then
         echo "Cổng 5900 đang được sử dụng; hãy dừng VNC process cũ trước khi chạy Proxmox."
@@ -968,8 +1026,9 @@ start_proxmox() {
         "${PROXMOX_DISK_PATH}" "${PROXMOX_ISO_PATH}" \
         >> "${PROXMOX_QEMU_LOG}"
     # Boot từ CD-ROM Proxmox ISO để cài đặt; sau khi cài xong có thể đổi thành -boot c.
-    # PipeWire không cần thiết cho Proxmox; tắt audio để thiếu client.conf không làm QEMU lỗi.
-    QEMU_AUDIO_DRV=none "${qemu_bin}" \
+    # QEMU phát âm thanh qua PulseAudio system socket. noVNC chuẩn chỉ truyền RFB;
+    # PulseAudio vẫn cung cấp backend audio cho VM và các client audio tương thích.
+    PULSE_SERVER="unix:${PROXMOX_PULSE_SOCKET}" "${qemu_bin}" \
         "${qemu_accel_args[@]}" \
         -cpu "${cpu_flags}" \
         -smp 2,cores=2 \
@@ -983,7 +1042,9 @@ start_proxmox() {
         "${boot_args[@]}" \
         -device virtio-serial-pci \
         -device virtio-rng-pci \
-        -audiodev driver=none,id=noaudio \
+        -audiodev "driver=pa,id=pa0,server=unix:${PROXMOX_PULSE_SOCKET}" \
+        -device ich9-intel-hda \
+        -device hda-duplex,audiodev=pa0 \
         -drive "file=${PROXMOX_DISK_PATH},format=raw" \
         "${pflash_args[@]}" \
         "${cdrom_args[@]}" \

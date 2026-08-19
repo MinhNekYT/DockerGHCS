@@ -71,9 +71,9 @@ Khi chạy `a.sh`, script hiển thị menu:
 3) Proxmox (QEMU/KVM)
 ```
 
-Nhập `1` để dùng `windows.yaml` và cài Windows từ link ISO do bạn cung cấp. Nhập `2` để dùng `macos.yaml`; script không hỏi Windows ISO và không thêm `USERNAME` hoặc `PASSWORD` vào cấu hình macOS. Lần đầu macOS khởi động, image `dockurr/macos` sẽ tự tải bộ cài cần thiết.
+Nhập `1` để dùng `windows.yaml` và cài Windows từ link ISO do bạn cung cấp. `windows.yaml` giữ `driver.iso` để cài VirtIO nhưng đồng thời có `AUDIO: "Y"` để image `ghcr.io/dockur/windows` bật sound card ảo và audio streaming trong web viewer. Nhập `2` để dùng `macos.yaml`; script không hỏi Windows ISO và không thêm `USERNAME` hoặc `PASSWORD` vào cấu hình macOS. Lần đầu macOS khởi động, image `dockurr/macos` sẽ tự tải bộ cài cần thiết.
 
-Cấu hình macOS sử dụng `VERSION: "15"`, `RAM_SIZE: "half"`, `CPU_CORES: "max"`, `DISK_SIZE: "400G"`, `/dev/kvm`, `/dev/net/tun`, cổng web `8006` và VNC `5900`. Cấu hình này cần Linux host có KVM, CPU hỗ trợ AVX2, tối thiểu 4 GB RAM và ít nhất 32 GB dung lượng trống. GitHub Codespaces chỉ chạy được nếu Codespace/host thực sự cấp Docker daemon và `/dev/kvm`.
+Cấu hình macOS sử dụng `VERSION: "15"`, `RAM_SIZE: "half"`, `CPU_CORES: "max"`, `DISK_SIZE: "400G"`, `AUDIO: "Y"`, `/dev/kvm`, `/dev/net/tun`, cổng web `8006` và VNC `5900`. `AUDIO: "Y"` bật sound card ảo và audio streaming trong web viewer của image `dockurr/macos`; trong web viewer cần bật **Settings → Advanced → Audio**. Cấu hình này cần Linux host có KVM, CPU hỗ trợ AVX2, tối thiểu 4 GB RAM và ít nhất 32 GB dung lượng trống. GitHub Codespaces chỉ chạy được nếu Codespace/host thực sự cấp Docker daemon và `/dev/kvm`.
 
 Theo tài liệu chính thức của dockur/macos, macOS được cung cấp bởi Apple và điều khoản sử dụng của Apple có thể giới hạn việc cài đặt trên phần cứng không phải Apple. Chỉ sử dụng cấu hình này khi bạn có quyền và giấy phép phù hợp.
 
@@ -81,7 +81,7 @@ Theo tài liệu chính thức của dockur/macos, macOS được cung cấp b�
 
 Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM. Theo mặc định, `a.sh` dùng Proxmox Automated Installation: script tạo answer file, tự cài `proxmox-auto-install-assistant`, chuẩn bị một ISO unattended và khởi động ISO đó bằng QEMU. Cấu hình mặc định là country code `vn` (Vietnam), FQDN `pve.local`, timezone `Asia/Ho_Chi_Minh`, network DHCP và filesystem ext4 trên disk guest `sda`. Script sẽ hỏi mật khẩu root Proxmox bằng prompt ẩn; mật khẩu không được ghi vào repository. First-boot hook tự đặt hostname/FQDN, tắt repository enterprise và bật `pve-no-subscription` cho Trixie.
 
-Theo phương án 2, QEMU chuyển tiếp riêng host port `8006` vào guest port `8006`, còn noVNC chạy ở host port `8888`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip`, `python3-pip`, `xorriso` và assistant package; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900`, noVNC ở cổng `8888` và Proxmox Web UI qua hostfwd `8006`. NIC dùng `virtio-net-pci` với QEMU user-mode IPv4, DHCP gateway mặc định `10.0.2.2`, DNS proxy `10.0.2.3` và tắt IPv6.
+Theo phương án 2, QEMU chuyển tiếp riêng host port `8006` vào guest port `8006`, còn noVNC chạy ở host port `8888`. Script sẽ cài `qemu-system-x86`, `qemu-system-gui`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `pulseaudio`, `pulseaudio-utils`, `unzip`, `python3-pip`, `xorriso` và assistant package; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900`, noVNC ở cổng `8888` và Proxmox Web UI qua hostfwd `8006`. NIC dùng `virtio-net-pci` với QEMU user-mode IPv4, DHCP gateway mặc định `10.0.2.2`, DNS proxy `10.0.2.3` và tắt IPv6.
 
 Nếu muốn dùng installer thủ công thay vì unattended:
 
@@ -100,7 +100,7 @@ Script lưu metadata riêng cho auto ISO, chỉ tái sử dụng ISO khi FQDN, c
 
 Cấu hình Proxmox dùng hostfwd **chỉ cho cổng 8006** theo phương án 2: host `8006` → guest `8006`. noVNC dùng host port `8888`. Script kiểm tra để hai cổng không trùng nhau và không nằm trong dải VNC `5900–5999`; trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port `5900–5999`, nên chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. QEMU vẫn dùng user-mode networking cho kết nối outbound qua NIC virtio. Sau khi Proxmox installer khởi động, chọn cấu hình mạng DHCP cho interface virtio; kiểm tra gateway bằng `ip route` và kiểm tra DNS bằng `getent hosts download.proxmox.com`.
 
-QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Audio được tắt bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính. Script đợi VNC `localhost:5900` và noVNC `8888` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
+QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Script khởi động PulseAudio system mode tại `/run/pulse/native`, rồi gắn sound card ảo `ich9-intel-hda`/`hda-duplex` vào QEMU bằng backend `pa`. Các cảnh báo như `can't load config client.conf` của PipeWire không còn là dependency của luồng này. noVNC chuẩn là client RFB nên truyền hình ảnh, bàn phím, chuột và clipboard; RFB/noVNC không tự mang một kênh audio riêng. PulseAudio vẫn cung cấp backend âm thanh cho QEMU và các client audio tương thích. Script đợi VNC `localhost:5900` và noVNC `8888` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
 
 ### Sửa lỗi `401 Unauthorized` của Proxmox repository
 
@@ -151,15 +151,17 @@ chmod +x xfce4.sh
 ./xfce4.sh
 ```
 
-Script `xfce4.sh` cài XFCE4, ưu tiên TigerVNC và dùng TightVNC làm fallback, cùng Google Chrome Stable. Script tạo cấu hình `~/.vnc/xstartup` để khởi động đúng phiên XFCE4 qua D-Bus. Khi chạy không có tham số, script sẽ cài các package còn thiếu rồi tự động khởi động VNC, noVNC và XFCE4; những lần chạy sau sẽ bỏ qua package đã có và chạy ngay.
+Script `xfce4.sh` cài XFCE4, ưu tiên TigerVNC và dùng TightVNC làm fallback, cùng Google Chrome Stable và PulseAudio (`pulseaudio`, `pulseaudio-utils`, `alsa-utils`). Script tạo cấu hình `~/.vnc/xstartup` để khởi động đúng phiên XFCE4 qua D-Bus và đặt `PULSE_SERVER` tới socket PulseAudio riêng của phiên desktop. Khi chạy không có tham số, script sẽ cài các package còn thiếu rồi tự động khởi động VNC, noVNC và XFCE4; những lần chạy sau sẽ bỏ qua package đã có và chạy ngay.
 
 ```bash
 ./xfce4.sh
 ```
 
-Nếu chưa có VNC password, script sẽ yêu cầu tạo password ẩn bên trong lần khởi động đầu tiên. Mặc định phiên là `:1`, tương ứng TCP port `5901`, còn noVNC của XFCE4 dùng host port `6080`. Hãy mở cổng `6080` trong Codespaces/Ubuntu host để truy cập noVNC từ máy client.
+Nếu chưa có VNC password, script sẽ yêu cầu tạo password ẩn bên trong lần khởi động đầu tiên. Mặc định phiên là `:1`, tương ứng TCP port `5901`, còn noVNC của XFCE4 dùng host port `6080`. PulseAudio chạy trong phiên user tại `~/.vnc/pulse/native`. Tuy nhiên, noVNC chuẩn chỉ chuyển RFB và không stream audio trực tiếp; muốn nghe âm thanh từ máy ảo/container qua trình duyệt, dùng web viewer có hỗ trợ audio của dockur và bật **Settings → Advanced → Audio**. Hãy mở cổng `6080` trong Codespaces/Ubuntu host để truy cập noVNC từ máy client.
 
 Lệnh `./xfce4.sh -start` vẫn được giữ như alias tương thích, nhưng không cần dùng. Script chạy ở foreground; nhấn **Ctrl+C** để dừng toàn bộ VNC, noVNC và XFCE4. Không có lệnh quản lý riêng cho password, stop hoặc status. Có thể đổi cấu hình bằng `VNC_DISPLAY=:2`, `NOVNC_PORT=6081`, `VNC_GEOMETRY=1920x1080` và `VNC_DEPTH=24` khi chạy script. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC riêng ở cổng `8888` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
+
+Trong `windows.yaml` và `macos.yaml`, `AUDIO: "Y"` bật sound card ảo và audio streaming chính thức của các image dockur. Windows vẫn giữ `driver.iso` để cài các driver VirtIO khác; `AUDIO: "Y"` là cấu hình âm thanh riêng, không thay thế driver ISO. Khi chạy Windows/macOS, mở web viewer tại port `8006` rồi bật **Settings → Advanced → Audio**.
 
 Nếu Google Chrome crash trong VNC, hãy mở Chrome bằng launcher đã cấu hình:
 

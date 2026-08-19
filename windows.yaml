@@ -5,6 +5,8 @@ services:
       RAM_SIZE: "half"
       CPU_CORES: "max"
       DISK_SIZE: "400G"
+      # Bật sound card ảo và streaming audio trong web viewer của dockur.
+      AUDIO: "Y"
       USERNAME: "windowsghcs"
       PASSWORD: "123456"
       ARGUMENTS: "-drive file=/driver.iso,media=cdrom"
