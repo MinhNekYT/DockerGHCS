@@ -83,7 +83,42 @@ Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM. 
 
 Cấu hình Proxmox dùng hostfwd **chỉ cho cổng 8006** theo phương án 2: host `8006` → guest `8006`. noVNC dùng host port `8888`. Script kiểm tra để hai cổng không trùng nhau và không nằm trong dải VNC `5900–5999`; trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port `5900–5999`, nên chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. QEMU vẫn dùng user-mode networking cho kết nối outbound qua NIC virtio. Sau khi Proxmox installer khởi động, chọn cấu hình mạng DHCP cho interface virtio; kiểm tra gateway bằng `ip route` và kiểm tra DNS bằng `getent hosts download.proxmox.com`.
 
-QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Audio được tắt bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính. Script đợi VNC `localhost:5900` và noVNC `8888` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu Debian truy cập được nhưng `enterprise.proxmox.com` không tải được, kiểm tra DNS, thời gian hệ thống và chứng chỉ TLS trước. Repository enterprise của Proxmox cần subscription hợp lệ; sau khi cài đặt, có thể dùng repository no-subscription phù hợp cho testing/non-production thay vì coi lỗi xác thực enterprise là lỗi mạng. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
+QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Audio được tắt bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính. Script đợi VNC `localhost:5900` và noVNC `8888` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
+
+### Sửa lỗi `401 Unauthorized` của Proxmox repository
+
+Nếu trong Proxmox xuất hiện `401 Unauthorized` từ `enterprise.proxmox.com`, mạng của VM đã hoạt động; lỗi là do repository `pve-enterprise` yêu cầu subscription. Ảnh lỗi có cả `ceph-squid` và `pve`, vì vậy cần tắt các repository enterprise nếu máy không có subscription. Proxmox mô tả repository no-subscription là lựa chọn không yêu cầu subscription, phù hợp cho testing/non-production [tài liệu repository chính thức](https://pve.proxmox.com/wiki/Package_Repositories).
+
+Đối với Proxmox VE 9 trên Debian Trixie, chạy trong terminal Proxmox bằng `root`:
+
+```bash
+# Tắt repository enterprise của PVE nếu tồn tại.
+for f in /etc/apt/sources.list.d/pve-enterprise.sources \
+         /etc/apt/sources.list.d/pve-enterprise.list; do
+  if [ -f "$f" ]; then
+    mv "$f" "$f.disabled"
+  fi
+done
+
+# Nếu chưa dùng Ceph, tắt Ceph enterprise để apt update không còn báo 401.
+if [ -f /etc/apt/sources.list.d/ceph.sources ]; then
+  mv /etc/apt/sources.list.d/ceph.sources \
+     /etc/apt/sources.list.d/ceph.sources.disabled
+fi
+
+# Bật repository Proxmox no-subscription chính thức cho Trixie.
+cat > /etc/apt/sources.list.d/proxmox.sources <<'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+
+apt-get update
+```
+
+Nếu cần Ceph, không tắt toàn bộ `ceph.sources` một cách mù quáng; hãy cấu hình repository Ceph no-subscription tương ứng với phiên bản Ceph đang dùng. Không bật đồng thời enterprise và no-subscription cho cùng một sản phẩm nếu không hiểu rõ pinning/repository priority. Repository no-subscription phù hợp cho lab và testing, không phải lựa chọn được Proxmox khuyến nghị cho production.
 
 ### Dán text vào Proxmox qua noVNC
 
