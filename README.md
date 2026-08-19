@@ -18,7 +18,29 @@ chmod +x install-chrome-xfce.sh
 ./install-chrome-xfce.sh
 ```
 
-Script yêu cầu quyền `sudo`, chỉ hỗ trợ hệ Debian/Ubuntu trên kiến trúc `x86_64`, có thể chạy lại an toàn và không cài display manager. Việc cài package không tự tạo GUI tương tác trong Codespace; để sử dụng desktop cần kết hợp thêm X11, VNC hoặc RDP và expose port phù hợp. Chrome có thể kiểm thử ở chế độ headless bằng `google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom https://example.com`.
+Script yêu cầu quyền `sudo`, chỉ hỗ trợ hệ Debian/Ubuntu trên kiến trúc `x86_64`, có thể chạy lại an toàn và không cài display manager. Việc cài package không tự tạo GUI tương tác trong Codespace; để sử dụng desktop cần khởi động thêm TightVNC và expose port phù hợp.
+
+Sau khi cài đặt, khởi động XFCE4 qua TightVNC bằng:
+
+```bash
+mkdir -p ~/.vnc
+cat > ~/.vnc/xstartup <<'EOF'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec dbus-launch --exit-with-session startxfce4
+EOF
+chmod +x ~/.vnc/xstartup
+vncserver :1 -localhost no -geometry 1280x800 -depth 24
+```
+
+Display `:1` dùng cổng `5901`. Trong cửa sổ terminal thuộc phiên VNC, chạy Chrome bằng launcher đã được tạo sẵn:
+
+```bash
+google-chrome-xfce
+```
+
+Launcher dùng profile riêng, ép Chrome chạy trên X11 và tránh lỗi khóa profile hoặc lỗi `/dev/shm` thường gặp trong Codespaces. Nếu cần dừng phiên VNC, dùng `vncserver -kill :1`. Chrome có thể kiểm thử ở chế độ headless bằng `google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom https://example.com`.
 
 Trong thư mục repository, chạy:
 

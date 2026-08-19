@@ -71,6 +71,7 @@ apt-get install -y --no-install-recommends \
     x11-xserver-utils \
     xauth \
     xvfb \
+    tightvncserver \
     ca-certificates \
     curl \
     gnupg
@@ -86,12 +87,52 @@ else
     rm -f "${CHROME_DEB}"
 fi
 
-# Cho phép Chrome chạy trong container/Codespace không có sandbox setuid.
-# Không tắt sandbox mặc định; chỉ tạo một lệnh tiện dụng khi người dùng chủ động cần.
+# Tạo launcher riêng cho XFCE4/TightVNC. Không thêm --no-sandbox mặc định:
+# Chrome chỉ cần tùy chọn này khi chạy bằng root hoặc môi trường sandbox bị giới hạn.
+cat > /usr/local/bin/google-chrome-xfce <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+: "${DISPLAY:=:1}"
+export DISPLAY
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-XFCE}"
+export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-xfce}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
+
+# Profile riêng tránh khóa profile hoặc xung đột với Chrome đang chạy.
+CHROME_PROFILE="${CHROME_PROFILE:-${HOME}/.config/google-chrome-codespace}"
+mkdir -p "${CHROME_PROFILE}"
+
+if [[ "${EUID}" -eq 0 ]]; then
+    echo "Không nên chạy Chrome bằng root trong XFCE4/TightVNC." >&2
+    echo "Hãy đăng nhập bằng Codespace user rồi chạy lại lệnh này." >&2
+    exit 1
+fi
+
+CHROME_FLAGS=(
+    "--user-data-dir=${CHROME_PROFILE}"
+    --disable-dev-shm-usage
+    --ozone-platform=x11
+    --disable-gpu
+    --no-first-run
+    --no-default-browser-check
+)
+
+# Chỉ dùng khi log báo user namespace/sandbox không hoạt động trong Codespace.
+if [[ "${CHROME_NO_SANDBOX:-0}" == "1" ]]; then
+    CHROME_FLAGS+=(--no-sandbox)
+fi
+
+exec /usr/bin/google-chrome "${CHROME_FLAGS[@]}" "$@"
+EOF
+chmod 0755 /usr/local/bin/google-chrome-xfce
+
 if [[ -n "${INSTALL_USER}" && "${INSTALL_USER}" != "root" ]] \
     && id "${INSTALL_USER}" >/dev/null 2>&1; then
     install -d -m 0755 -o "${INSTALL_USER}" -g "${INSTALL_USER}" \
         "/home/${INSTALL_USER}/.config/xfce4"
+    install -d -m 0700 -o "${INSTALL_USER}" -g "${INSTALL_USER}" \
+        "/home/${INSTALL_USER}/.vnc"
 fi
 
 # Xác minh các binary quan trọng sau khi cài.
@@ -106,6 +147,10 @@ cat <<'EOF'
 
 Lưu ý cho GitHub Codespaces:
   - Codespaces không tự hiển thị desktop GUI sau khi cài package.
+  - Sau khi khởi động TightVNC ở display :1, chạy Chrome bằng:
+      google-chrome-xfce
+  - Nếu Chrome vẫn không mở, kiểm tra DISPLAY bằng `echo "$DISPLAY"`; với VNC display :1, giá trị phải là `:1`.
+  - Nếu log báo lỗi sandbox, chạy `CHROME_NO_SANDBOX=1 google-chrome-xfce`.
   - Có thể kiểm thử Chrome headless bằng:
       google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom https://example.com
   - Để dùng XFCE4 tương tác, cần chạy thêm một máy chủ X/VNC/RDP phù hợp với cách expose port của Codespace.
