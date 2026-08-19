@@ -107,7 +107,7 @@ Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nh�
 sudo PROXMOX_DISK_SIZE=128G ./a.sh
 ```
 
-Host có `/dev/kvm` với quyền đọc/ghi thì script dùng KVM và CPU model `host`; nếu Codespace không cấp KVM, script tự dùng TCG với CPU model `max`, có thể chậm hơn nhưng không dừng chỉ vì thiếu `/dev/kvm`. Cần đủ dung lượng trống cho ISO và raw disk. Trình tải ISO hỗ trợ cả `curl` và `wget`, sau đó kiểm tra kích thước và SHA256 Proxmox. Dự án không còn cài đặt hoặc sử dụng Cloudflare Tunnel; kết nối Proxmox dùng port forwarding của Codespace/Ubuntu host và hướng dẫn XFCE4 ở trên. Lần cài đầu tiên boot từ ISO; sau khi cài xong, nếu muốn boot ổ đĩa thay vì ISO, đổi `-boot order=d,menu=on` thành `-boot c` trong `a.sh` hoặc xóa ISO sau khi tắt QEMU.
+Host có `/dev/kvm` với quyền đọc/ghi thì script dùng KVM và CPU model `host`; nếu Codespace không cấp KVM, script tự dùng TCG với CPU model `max`, có thể chậm hơn nhưng không dừng chỉ vì thiếu `/dev/kvm`. Cần đủ dung lượng trống cho ISO và raw disk. Trình tải ISO hỗ trợ cả `curl` và `wget`, sau đó kiểm tra kích thước và SHA256 Proxmox. Kết nối Proxmox dùng port forwarding của Codespace/Ubuntu host và hướng dẫn XFCE4 ở trên. Lần cài đầu tiên boot từ ISO; sau khi cài xong, nếu muốn boot ổ đĩa thay vì ISO, đổi `-boot order=d,menu=on` thành `-boot c` trong `a.sh` hoặc xóa ISO sau khi tắt QEMU.
 
 ## Giấy phép
 
