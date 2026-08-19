@@ -586,7 +586,11 @@ install_proxmox_auto_install_assistant() {
         "http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/Packages.gz" \
         "${package_index}"
     package_block="$(gzip -dc "${package_index}" \
-        | awk '/^Package: proxmox-auto-install-assistant$/{found=1} found{print} found && /^$/{exit}')"
+        | awk '
+            /^Package: proxmox-auto-install-assistant$/ { found=1 }
+            found { print }
+            found && /^$/ { found=0 }
+        ')"
     rm -f "${package_index}"
     package_filename="$(printf '%s\n' "${package_block}" \
         | sed -n 's/^Filename: //p' | head -n 1)"
