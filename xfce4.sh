@@ -20,14 +20,6 @@ case "${1:-}" in
         ACTION="start"
         shift
         ;;
-    -stop|--stop)
-        ACTION="stop"
-        shift
-        ;;
-    -status|--status)
-        ACTION="status"
-        shift
-        ;;
     -password|--password)
         ACTION="password"
         shift
@@ -38,8 +30,8 @@ Usage:
   ./xfce4.sh             Install XFCE4, VNC, noVNC and Google Chrome
   ./xfce4.sh -start      Start VNC + noVNC + XFCE4
   ./xfce4.sh -password   Create or change the VNC password
-  ./xfce4.sh -status     Show VNC/noVNC status
-  ./xfce4.sh -stop       Stop VNC and noVNC
+
+  Press Ctrl+C while `-start` is running to stop VNC, noVNC and XFCE4.
 
 Environment:
   VNC_DISPLAY=:1       VNC display; :1 maps to TCP 5901
@@ -309,20 +301,6 @@ exec "\${VNC_SERVER}" "\${VNC_DISPLAY}" -geometry "\${VNC_GEOMETRY}" -depth "\${
 EOF
 chmod 0755 /usr/local/bin/xfce4-vnc-start
 
-cat > /usr/local/bin/xfce4-vnc-stop <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-VNC_USER="${INSTALL_USER}"
-VNC_HOME="${INSTALL_HOME}"
-VNC_SERVER="${VNC_SERVER_BIN}"
-VNC_DISPLAY="${VNC_DISPLAY}"
-if [[ "\${EUID}" -eq 0 ]]; then
-    exec runuser -u "\${VNC_USER}" -- env HOME="\${VNC_HOME}" USER="\${VNC_USER}" LOGNAME="\${VNC_USER}" "\$0" "\$@"
-fi
-"\${VNC_SERVER}" -kill "\${VNC_DISPLAY}" || true
-EOF
-chmod 0755 /usr/local/bin/xfce4-vnc-stop
-
 cat > /usr/local/bin/xfce4-vnc-password <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -336,20 +314,6 @@ chmod 700 "\${HOME}/.vnc"
 exec vncpasswd "\${HOME}/.vnc/passwd"
 EOF
 chmod 0755 /usr/local/bin/xfce4-vnc-password
-
-cat > /usr/local/bin/xfce4-vnc-status <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-VNC_USER="${INSTALL_USER}"
-VNC_DISPLAY="${VNC_DISPLAY}"
-if pgrep -u "\${VNC_USER}" -af "(tigervnc|tightvnc|Xvnc).*\${VNC_DISPLAY}"; then
-    echo "XFCE4 VNC đang chạy cho \${VNC_USER} tại \${VNC_DISPLAY}."
-    exit 0
-fi
-echo "XFCE4 VNC chưa chạy cho \${VNC_USER} tại \${VNC_DISPLAY}."
-exit 1
-EOF
-chmod 0755 /usr/local/bin/xfce4-vnc-status
 
 NOVNC_PROXY_BIN=""
 if command -v novnc_proxy >/dev/null 2>&1; then
@@ -400,28 +364,28 @@ echo "noVNC đang chạy tại cổng \${NOVNC_PORT}; VNC origin 127.0.0.1:\${VN
 EOF
 chmod 0755 /usr/local/bin/xfce4-novnc-start
 
-cat > /usr/local/bin/xfce4-novnc-stop <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-VNC_USER="${INSTALL_USER}"
-VNC_HOME="${INSTALL_HOME}"
-NOVNC_PID_FILE="${NOVNC_PID_FILE}"
-if [[ "\${EUID}" -eq 0 ]]; then
-    exec runuser -u "\${VNC_USER}" -- env HOME="\${VNC_HOME}" USER="\${VNC_USER}" LOGNAME="\${VNC_USER}" "\$0" "\$@"
-fi
-if [[ -f "\${NOVNC_PID_FILE}" ]]; then
-    pid="\$(cat "\${NOVNC_PID_FILE}" 2>/dev/null || true)"
-    if [[ "\${pid}" =~ ^[0-9]+$ ]]; then
-        kill "\${pid}" 2>/dev/null || true
-    fi
-    rm -f "\${NOVNC_PID_FILE}"
-fi
-EOF
-chmod 0755 /usr/local/bin/xfce4-novnc-stop
-
 command -v startxfce4 >/dev/null 2>&1
 command -v google-chrome >/dev/null 2>&1
 google-chrome --version
+
+cleanup_vnc() {
+    local exit_code=$?
+    trap - INT TERM EXIT
+    if [[ -f "${NOVNC_PID_FILE}" ]]; then
+        local novnc_pid
+        novnc_pid="$(cat "${NOVNC_PID_FILE}" 2>/dev/null || true)"
+        if [[ "${novnc_pid}" =~ ^[0-9]+$ ]]; then
+            kill "${novnc_pid}" 2>/dev/null || true
+        fi
+        rm -f "${NOVNC_PID_FILE}"
+    fi
+    runuser -u "${INSTALL_USER}" -- env \
+        HOME="${INSTALL_HOME}" USER="${INSTALL_USER}" LOGNAME="${INSTALL_USER}" \
+        "${VNC_SERVER_BIN}" -kill "${VNC_DISPLAY}" \
+        >/dev/null 2>&1 || true
+    echo "Đã dừng noVNC, VNC và XFCE4." >&2
+    exit "${exit_code}"
+}
 
 case "${ACTION}" in
     install)
@@ -448,25 +412,15 @@ EOF
             echo "Chưa có VNC password; hãy tạo password ngay bây giờ."
             /usr/local/bin/xfce4-vnc-password
         fi
+        trap cleanup_vnc INT TERM EXIT
         /usr/local/bin/xfce4-vnc-start
         /usr/local/bin/xfce4-novnc-start
-        echo "XFCE4 + VNC + noVNC đã khởi động."
+        echo "XFCE4 + VNC + noVNC đang chạy ở foreground."
         echo "VNC port: ${VNC_PORT}"
-        echo "noVNC đã lắng nghe tại host port ${NOVNC_PORT}; hãy mở URL do Codespaces/forwarded host cung cấp từ máy client."
-        ;;
-    stop)
-        /usr/local/bin/xfce4-novnc-stop || true
-        /usr/local/bin/xfce4-vnc-stop || true
-        echo "Đã dừng noVNC và VNC/XFCE4."
-        ;;
-    status)
-        /usr/local/bin/xfce4-vnc-status || true
-        if [[ -f "${NOVNC_PID_FILE}" ]] \
-            && kill -0 "$(cat "${NOVNC_PID_FILE}" 2>/dev/null)" 2>/dev/null; then
-            echo "noVNC đang chạy tại cổng ${NOVNC_PORT}."
-        else
-            echo "noVNC chưa chạy tại cổng ${NOVNC_PORT}."
-            exit 1
-        fi
+        echo "noVNC host port: ${NOVNC_PORT}"
+        echo "Nhấn Ctrl+C để dừng toàn bộ VNC, noVNC và XFCE4."
+        while :; do
+            sleep 3600
+        done
         ;;
 esac
