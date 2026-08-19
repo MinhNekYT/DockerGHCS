@@ -8,6 +8,18 @@ DockerGHCS chạy Windows trong container Docker thông qua [dockur/windows](htt
 
 Tạo Codespace hoặc Ubuntu host có tối thiểu 4 CPU, 16 GB RAM và dung lượng trống phù hợp. Vì cấu hình hiện tại dùng đĩa ảo `400G`, storage cần đủ lớn khi Windows phát sinh dữ liệu; đĩa ảo có thể bắt đầu dưới dạng sparse nhưng không được để filesystem đầy.
 
+### Cài Google Chrome và XFCE4
+
+Nếu chỉ cần cài Google Chrome Stable và môi trường desktop XFCE4 trong Codespace, chạy script độc lập sau:
+
+```bash
+wget -O install-chrome-xfce.sh https://raw.githubusercontent.com/MinhNekYT/WindowsGHCS/main/install-chrome-xfce.sh
+chmod +x install-chrome-xfce.sh
+./install-chrome-xfce.sh
+```
+
+Script yêu cầu quyền `sudo`, chỉ hỗ trợ hệ Debian/Ubuntu trên kiến trúc `x86_64`, có thể chạy lại an toàn và không cài display manager. Việc cài package không tự tạo GUI tương tác trong Codespace; để sử dụng desktop cần kết hợp thêm X11, VNC hoặc RDP và expose port phù hợp. Chrome có thể kiểm thử ở chế độ headless bằng `google-chrome --headless=new --no-sandbox --disable-gpu --dump-dom https://example.com`.
+
 Trong thư mục repository, chạy:
 
 ```bash
