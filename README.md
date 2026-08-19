@@ -42,7 +42,7 @@ Nếu package, Docker daemon, QEMU/KVM, OVMF và noVNC đã có sẵn, script s�
 | Disk ảo | `400G` |
 | Windows user | `windowsghcs` |
 | Windows password | `123456` |
-| Web viewer | `http://localhost:8006` |
+| Web viewer | Host port `8006` (mở bằng địa chỉ host/forwarded) |
 | RDP | Cổng `3389` TCP/UDP |
 | Thiết bị | `/dev/kvm`, `/dev/net/tun` |
 
@@ -97,13 +97,18 @@ noVNC đã có panel **Clipboard** riêng. Để dán text vào Proxmox mà khô
 
 ### Cloudflare Tunnel
 
-Sau khi QEMU và noVNC sẵn sàng, script cài `cloudflared` từ repository chính thức Cloudflare nếu chưa có. Script yêu cầu nhập **Tunnel service token** bằng chế độ ẩn; token không được ghi vào `README.md`, `a.sh` hoặc commit Git. Có thể truyền token qua biến môi trường `CLOUDFLARE_TUNNEL_TOKEN` để không phải nhập lại trong phiên hiện tại.
+Sau khi QEMU và noVNC sẵn sàng, script cài `cloudflared` từ repository chính thức Cloudflare nếu chưa có. Script yêu cầu nhập **Tunnel service token** bằng chế độ ẩn; token không được ghi vào `README.md`, `a.sh` hoặc commit Git. Có thể truyền token qua biến môi trường `CLOUDFLARE_TUNNEL_TOKEN` để không phải nhập lại trong phiên hiện tại. Nếu muốn script in trực tiếp hostname public sau khi khởi động, truyền thêm `CLOUDFLARE_PROXMOX_HOSTNAME` và `CLOUDFLARE_NOVNC_HOSTNAME`.
 
 ```bash
-CLOUDFLARE_TUNNEL_TOKEN='YOUR_TUNNEL_TOKEN' ./a.sh
+CLOUDFLARE_TUNNEL_TOKEN='YOUR_TUNNEL_TOKEN' \
+CLOUDFLARE_PROXMOX_HOSTNAME='proxmox.example.com' \
+CLOUDFLARE_NOVNC_HOSTNAME='novnc.example.com' \
+./a.sh
 ```
 
-Script hiển thị public IPv4 của VM, noVNC `IPv4:6080` và Proxmox `IPv4:8006` nếu các cổng đó được forward. Cloudflare Tunnel vẫn cần route/hostname được cấu hình trong Cloudflare Dashboard; token chỉ kết nối connector và không tự tạo public hostname.
+Script hiển thị public IPv4 của VM cùng direct endpoint `IPv4:6080` cho noVNC và `IPv4:8006` cho Proxmox nếu các cổng đó được forward. Script không dùng `http://localhost` hoặc `http://127.0.0.1` làm địa chỉ để người dùng mở từ máy client. Hai origin nội bộ `127.0.0.1:6080` và `127.0.0.1:8006` chỉ dành cho Cloudflare route. Khi dùng Tunnel, hãy mở hostname Cloudflare đã cấu hình, ví dụ `https://novnc.example.com` hoặc `https://proxmox.example.com`; token chỉ kết nối connector và không tự tạo public hostname.
+
+Trong Cloudflare Dashboard, cấu hình origin noVNC tới `http://127.0.0.1:6080` và origin Proxmox tới `https://127.0.0.1:8006`; với Proxmox dùng chứng chỉ tự ký, bật `noTLSVerify` trong origin request. Đây là địa chỉ origin nội bộ của Tunnel, không phải URL để mở trên máy client.
 
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 

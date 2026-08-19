@@ -22,6 +22,8 @@ CLOUDFLARED_APT_LOG="/tmp/dockerghcs-cloudflared-apt.log"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 PROXMOX_GUEST_PORT="${PROXMOX_GUEST_PORT:-8006}"
 CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+CLOUDFLARE_PROXMOX_HOSTNAME="${CLOUDFLARE_PROXMOX_HOSTNAME:-}"
+CLOUDFLARE_NOVNC_HOSTNAME="${CLOUDFLARE_NOVNC_HOSTNAME:-}"
 QEMU_VNC_TIMEOUT="${QEMU_VNC_TIMEOUT:-60}"
 WINDOWS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/windows.yaml"
 MACOS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/macos.yaml"
@@ -89,7 +91,7 @@ if [[ "${EUID}" -ne 0 ]]; then
     )
     # Codespaces có thể dùng DOCKER_HOST/DOCKER_CONTEXT để trỏ tới daemon bên ngoài.
     # Giữ các biến này khi chuyển sang root, nếu không script sẽ tưởng Docker bị hỏng.
-    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT CLOUDFLARE_TUNNEL_TOKEN QEMU_VNC_TIMEOUT; do
+    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT CLOUDFLARE_TUNNEL_TOKEN CLOUDFLARE_PROXMOX_HOSTNAME CLOUDFLARE_NOVNC_HOSTNAME QEMU_VNC_TIMEOUT; do
         if [[ -n "${!docker_env_name:-}" ]]; then
             sudo_environment+=("${docker_env_name}=${!docker_env_name}")
         fi
@@ -501,10 +503,21 @@ configure_cloudflared() {
     public_ipv4="$(get_public_ipv4)"
     echo "Cloudflare Tunnel đã được khởi động hoặc đang hoạt động."
     echo "Public IPv4 của VM: ${public_ipv4}"
-    echo "Proxmox guest service: http://127.0.0.1:${PROXMOX_GUEST_PORT} (hostfwd từ host)"
-    echo "Proxmox forwarding endpoint: http://${public_ipv4}:${PROXMOX_GUEST_PORT} nếu host/network cho phép."
-    echo "noVNC endpoint: http://${public_ipv4}:${NOVNC_PORT} nếu port ${NOVNC_PORT} được forward."
-    echo "Cloudflare hostname/route phải được cấu hình trong Cloudflare Dashboard trỏ tới host service tương ứng."
+    echo "Origin Proxmox nội bộ: 127.0.0.1:${PROXMOX_GUEST_PORT} (chỉ dành cho Cloudflare route; không mở địa chỉ localhost này)."
+    echo "Origin noVNC nội bộ: 127.0.0.1:${NOVNC_PORT} (chỉ dành cho Cloudflare route; không mở địa chỉ localhost này)."
+    echo "Direct IPv4 endpoint Proxmox: http://${public_ipv4}:${PROXMOX_GUEST_PORT} nếu host/network đã forward port."
+    echo "Direct IPv4 endpoint noVNC: http://${public_ipv4}:${NOVNC_PORT} nếu host/network đã forward port."
+    if [[ -n "${CLOUDFLARE_PROXMOX_HOSTNAME}" ]]; then
+        echo "Cloudflare Proxmox URL: https://${CLOUDFLARE_PROXMOX_HOSTNAME}"
+    else
+        echo "Cloudflare Proxmox URL: mở hostname đã cấu hình trong Cloudflare Dashboard."
+    fi
+    if [[ -n "${CLOUDFLARE_NOVNC_HOSTNAME}" ]]; then
+        echo "Cloudflare noVNC URL: https://${CLOUDFLARE_NOVNC_HOSTNAME}"
+    else
+        echo "Cloudflare noVNC URL: mở hostname đã cấu hình trong Cloudflare Dashboard."
+    fi
+    echo "Không mở các origin nội bộ 127.0.0.1 từ máy client; hãy dùng URL direct IPv4 hoặc hostname Cloudflare ở trên."
 }
 
 install_proxmox_packages() {
