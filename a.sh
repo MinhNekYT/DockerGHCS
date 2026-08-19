@@ -803,7 +803,7 @@ start_proxmox() {
 
     echo ""
     echo "=== Khởi động Proxmox qua QEMU/KVM ==="
-    echo "Phương án 2: hostfwd host:${PROXMOX_GUEST_PORT} -> guest:8006; mạng user-mode vẫn được bật cho outbound traffic."
+    echo "Phương án 2: hostfwd host:${PROXMOX_GUEST_PORT} -> guest:8006; NIC virtio dùng QEMU user-mode IPv4, DNS 10.0.2.3 và tắt IPv6 để ổn định truy cập repository."
     : > "${PROXMOX_QEMU_LOG}"
     printf 'qemu=%s\naccel=%s\ncpu=%s\ndisk=%s\niso=%s\n' \
         "${qemu_bin}" "${QEMU_ACCELERATOR}" "${cpu_flags}" \
@@ -820,8 +820,8 @@ start_proxmox() {
         -m 8G \
         -device virtio-balloon-pci \
         -vga virtio \
-        -net nic,netdev=n0,model=virtio-net-pci \
-        -netdev "user,id=n0,hostfwd=tcp::${PROXMOX_GUEST_PORT}-:8006" \
+        -device virtio-net-pci,netdev=n0 \
+        -netdev "user,id=n0,ipv4=on,ipv6=off,dns=10.0.2.3,hostfwd=tcp::${PROXMOX_GUEST_PORT}-:8006" \
         -boot order=d,menu=on \
         -device virtio-serial-pci \
         -device virtio-rng-pci \
