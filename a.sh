@@ -17,6 +17,11 @@ MIN_FREE_KB=$((10 * 1024 * 1024))
 DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
 PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
+CLOUDFLARED_LOG="/tmp/dockerghcs-cloudflared.log"
+CLOUDFLARED_APT_LOG="/tmp/dockerghcs-cloudflared-apt.log"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+PROXMOX_GUEST_PORT="${PROXMOX_GUEST_PORT:-8006}"
+CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
 QEMU_VNC_TIMEOUT="${QEMU_VNC_TIMEOUT:-60}"
 WINDOWS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/windows.yaml"
 MACOS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/macos.yaml"
@@ -84,7 +89,7 @@ if [[ "${EUID}" -ne 0 ]]; then
     )
     # Codespaces có thể dùng DOCKER_HOST/DOCKER_CONTEXT để trỏ tới daemon bên ngoài.
     # Giữ các biến này khi chuyển sang root, nếu không script sẽ tưởng Docker bị hỏng.
-    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE; do
+    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT CLOUDFLARE_TUNNEL_TOKEN QEMU_VNC_TIMEOUT; do
         if [[ -n "${!docker_env_name:-}" ]]; then
             sudo_environment+=("${docker_env_name}=${!docker_env_name}")
         fi
@@ -413,6 +418,95 @@ proxmox_tools_ready() {
         && command -v cpulimit > /dev/null 2>&1
 }
 
+install_cloudflared() {
+    if command -v cloudflared > /dev/null 2>&1; then
+        echo "cloudflared đã có sẵn; bỏ qua cài đặt."
+        return 0
+    fi
+
+    echo "=== Cài cloudflared từ repository Cloudflare ==="
+    apt-get update > "${CLOUDFLARED_APT_LOG}" 2>&1
+    install -d -m 0755 /usr/share/keyrings
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+        | tee /usr/share/keyrings/cloudflare-main.gpg > /dev/null
+    printf '%s\n' \
+        'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
+        | tee /etc/apt/sources.list.d/cloudflared.list > /dev/null
+    apt-get update > "${CLOUDFLARED_APT_LOG}" 2>&1
+    apt-get install -y cloudflared >> "${CLOUDFLARED_APT_LOG}" 2>&1
+    command -v cloudflared > /dev/null 2>&1 || {
+        echo "Cài cloudflared thất bại; xem ${CLOUDFLARED_APT_LOG}."
+        exit 1
+    }
+}
+
+get_public_ipv4() {
+    local public_ipv4=""
+    if command -v curl > /dev/null 2>&1; then
+        public_ipv4="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+        if [[ -z "${public_ipv4}" ]]; then
+            public_ipv4="$(curl -4 -fsS --max-time 10 https://ifconfig.me 2>/dev/null || true)"
+        fi
+    fi
+    if [[ "${public_ipv4}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        printf '%s' "${public_ipv4}"
+    else
+        printf '%s' "unknown"
+    fi
+}
+
+configure_cloudflared() {
+    local token="${CLOUDFLARE_TUNNEL_TOKEN}"
+    local public_ipv4
+
+    if command -v systemctl > /dev/null 2>&1 \
+        && systemctl is-active --quiet cloudflared 2>/dev/null; then
+        echo "cloudflared service đã chạy; không hỏi lại token."
+    else
+        if [[ -z "${token}" ]]; then
+            printf 'Nhập Cloudflare Tunnel service token (ẩn, không lưu vào repo): ' >&2
+            read -r -s token
+            printf '\n' >&2
+        fi
+        if [[ -z "${token}" ]]; then
+            echo "Cloudflare Tunnel token không được để trống."
+            exit 1
+        fi
+
+        if command -v systemctl > /dev/null 2>&1 \
+            && systemctl list-unit-files cloudflared.service > /dev/null 2>&1; then
+            echo "Cài cloudflared service; token không được ghi vào repository."
+            if ! cloudflared service install "${token}" > "${CLOUDFLARED_LOG}" 2>&1; then
+                echo "cloudflared service install thất bại; xem ${CLOUDFLARED_LOG}."
+                unset token
+                exit 1
+            fi
+            systemctl enable --now cloudflared >> "${CLOUDFLARED_LOG}" 2>&1 || true
+        else
+            echo "systemd không khả dụng; chạy cloudflared tunnel trực tiếp trong nền."
+            : > "${CLOUDFLARED_LOG}"
+            nohup cloudflared tunnel --no-autoupdate run --token "${token}" \
+                >> "${CLOUDFLARED_LOG}" 2>&1 &
+            CLOUDFLARED_PID=$!
+            sleep 3
+            if ! kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
+                echo "cloudflared không khởi động được; xem ${CLOUDFLARED_LOG}."
+                unset token
+                exit 1
+            fi
+        fi
+        unset token
+    fi
+
+    public_ipv4="$(get_public_ipv4)"
+    echo "Cloudflare Tunnel đã được khởi động hoặc đang hoạt động."
+    echo "Public IPv4 của VM: ${public_ipv4}"
+    echo "Proxmox guest service: http://127.0.0.1:${PROXMOX_GUEST_PORT} (hostfwd từ host)"
+    echo "Proxmox forwarding endpoint: http://${public_ipv4}:${PROXMOX_GUEST_PORT} nếu host/network cho phép."
+    echo "noVNC endpoint: http://${public_ipv4}:${NOVNC_PORT} nếu port ${NOVNC_PORT} được forward."
+    echo "Cloudflare hostname/route phải được cấu hình trong Cloudflare Dashboard trỏ tới host service tương ứng."
+}
+
 install_proxmox_packages() {
     if proxmox_tools_ready; then
         echo ""
@@ -556,13 +650,13 @@ start_novnc() {
         echo "Không tìm thấy novnc_proxy sau khi cài noVNC/websockify."
         exit 1
     fi
-    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)8006$'; then
-        echo "Cổng 8006 đang được sử dụng; không thể khởi động noVNC."
+    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${NOVNC_PORT}$"; then
+        echo "Cổng ${NOVNC_PORT} đang được sử dụng; không thể khởi động noVNC."
         exit 1
     fi
 
-    echo "Khởi động noVNC: --listen 8006 --vnc localhost:5900"
-    nohup "${novnc_proxy}" --listen 8006 --vnc localhost:5900 \
+    echo "Khởi động noVNC: --listen ${NOVNC_PORT} --vnc localhost:5900"
+    nohup "${novnc_proxy}" --listen "${NOVNC_PORT}" --vnc localhost:5900 \
         > "${PROXMOX_NOVNC_LOG}" 2>&1 &
     NOVNC_PID=$!
     sleep 2
@@ -571,12 +665,12 @@ start_novnc() {
         tail -n 30 "${PROXMOX_NOVNC_LOG}" 2>/dev/null || true
         exit 1
     fi
-    if ! wait_for_tcp_port 8006 30; then
-        echo "noVNC process còn chạy nhưng cổng 8006 chưa mở."
+    if ! wait_for_tcp_port "${NOVNC_PORT}" 30; then
+        echo "noVNC process còn chạy nhưng cổng ${NOVNC_PORT} chưa mở."
         tail -n 40 "${PROXMOX_NOVNC_LOG}" 2>/dev/null || true
         exit 1
     fi
-    echo "noVNC đang chạy với PID ${NOVNC_PID}; mở cổng 8006."
+    echo "noVNC đang chạy với PID ${NOVNC_PID}; mở cổng ${NOVNC_PORT}."
 }
 
 stop_port_range_5900_5999() {
@@ -613,7 +707,7 @@ stop_stale_processes() {
     stop_port_range_5900_5999
     local pattern pid
     local patterns=(
-        'novnc_proxy.*--listen[[:space:]]+8006.*--vnc[[:space:]]+localhost:5900'
+        "novnc_proxy.*--listen[[:space:]]+${NOVNC_PORT}.*--vnc[[:space:]]+localhost:5900"
         'qemu.*proxmox-ve_9\.2-1\.iso'
         'qemu.*dockerghcs-proxmox'
         'cpulimit.*qemu.*a\.img'
@@ -635,6 +729,9 @@ cleanup_proxmox() {
     fi
     if [[ -n "${QEMU_PID:-}" ]] && kill -0 "${QEMU_PID}" 2>/dev/null; then
         kill "${QEMU_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${CLOUDFLARED_PID:-}" ]] && kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
+        kill "${CLOUDFLARED_PID}" 2>/dev/null || true
     fi
 }
 
@@ -693,7 +790,7 @@ start_proxmox() {
 
     echo ""
     echo "=== Khởi động Proxmox qua QEMU/KVM ==="
-    echo "Bỏ hostfwd theo yêu cầu; mạng user-mode vẫn được bật cho outbound traffic."
+    echo "Phương án 2: hostfwd host:${PROXMOX_GUEST_PORT} -> guest:8006; mạng user-mode vẫn được bật cho outbound traffic."
     : > "${PROXMOX_QEMU_LOG}"
     printf 'qemu=%s\naccel=%s\ncpu=%s\ndisk=%s\niso=%s\n' \
         "${qemu_bin}" "${QEMU_ACCELERATOR}" "${cpu_flags}" \
@@ -711,7 +808,7 @@ start_proxmox() {
         -device virtio-balloon-pci \
         -vga virtio \
         -net nic,netdev=n0,model=virtio-net-pci \
-        -netdev user,id=n0 \
+        -netdev "user,id=n0,hostfwd=tcp::${PROXMOX_GUEST_PORT}-:8006" \
         -boot order=d,menu=on \
         -device virtio-serial-pci \
         -device virtio-rng-pci \
@@ -737,9 +834,11 @@ start_proxmox() {
     fi
     echo "QEMU/Proxmox đang chạy với PID ${QEMU_PID}; VNC nội bộ localhost:5900."
     start_novnc
-    echo "noVNC: cổng 8006; không có hostfwd cổng 3389."
+    echo "noVNC: cổng ${NOVNC_PORT}; Proxmox hostfwd: cổng ${PROXMOX_GUEST_PORT} -> guest:8006."
     echo "Paste không cần clipboard hệ điều hành: mở panel Clipboard trong noVNC, nhập text rồi bấm Send."
     echo "Clipboard chỉ được dùng khi bạn chủ động Copy/Send nội dung trong panel noVNC."
+    install_cloudflared
+    configure_cloudflared
     wait "${QEMU_PID}"
 }
 

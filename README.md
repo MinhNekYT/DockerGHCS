@@ -85,15 +85,25 @@ Theo tài liệu chính thức của dockur/macos, macOS được cung cấp b�
 
 ## Proxmox qua QEMU/KVM
 
-Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM, không dùng Docker Compose và không dùng `hostfwd`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip` và `python3-pip`; `psmisc` cung cấp `fuser` để dừng process trên dải cổng; nếu Ubuntu repository có package `qemu-kvm` thì cũng cài thêm; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900` và noVNC ở cổng `8006`.
+Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM. Theo phương án 2, QEMU chuyển tiếp riêng host port `8006` vào guest port `8006`, còn noVNC chạy ở host port `6080`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip`, `python3-pip` và `cloudflared`; `psmisc` cung cấp `fuser` để dừng process trên dải cổng; nếu Ubuntu repository có package `qemu-kvm` thì cũng cài thêm; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900`, noVNC ở cổng `6080` và Proxmox Web UI qua hostfwd `8006`.
 
-Cấu hình Proxmox bỏ `hostfwd` theo yêu cầu. Trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port 5900–5999; chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. Vì vậy không có chuyển tiếp RDP/3389 tự động; truy cập giao diện Proxmox qua noVNC ở cổng 8006. QEMU vẫn dùng user-mode networking cho kết nối outbound, nhưng không mở host port forwarding.
+Cấu hình Proxmox dùng hostfwd **chỉ cho cổng 8006** theo phương án 2: host `8006` → guest `8006`. noVNC dùng host port `6080`. Trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port 5900–5999; chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. QEMU vẫn dùng user-mode networking cho kết nối outbound.
 
-QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Audio được tắt bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính. Script đợi VNC `localhost:5900` và noVNC `8006` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
+QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID và mã lỗi được theo dõi chính xác. Audio được tắt bằng `QEMU_AUDIO_DRV=none` và `-audiodev driver=none,id=noaudio`, vì Proxmox không cần PipeWire. Các cảnh báo như `can't load config client.conf` của PipeWire thường không phải nguyên nhân chính. Script đợi VNC `localhost:5900` và noVNC `6080` mở thật sự trước khi báo thành công; log lệnh và lỗi QEMU nằm tại `/tmp/dockerghcs-proxmox-qemu.log`, còn noVNC nằm tại `/tmp/dockerghcs-proxmox-novnc.log`. Nếu QEMU vẫn dừng, hãy gửi 80 dòng cuối của hai file log cùng kết quả `ls -l /dev/kvm`.
 
 ### Dán text vào Proxmox qua noVNC
 
 noVNC đã có panel **Clipboard** riêng. Để dán text vào Proxmox mà không cần cấp quyền clipboard cho trình duyệt hoặc dùng clipboard hệ điều hành, hãy mở panel **Clipboard**, nhập hoặc dán text vào ô của panel rồi bấm **Send**. Cách này gửi nội dung qua API VNC đến máy ảo; nó không yêu cầu Ctrl+V trực tiếp trên canvas. Chỉ dùng nút **Copy/Send** trong panel khi bạn chủ động muốn truyền hoặc nhận nội dung clipboard.
+
+### Cloudflare Tunnel
+
+Sau khi QEMU và noVNC sẵn sàng, script cài `cloudflared` từ repository chính thức Cloudflare nếu chưa có. Script yêu cầu nhập **Tunnel service token** bằng chế độ ẩn; token không được ghi vào `README.md`, `a.sh` hoặc commit Git. Có thể truyền token qua biến môi trường `CLOUDFLARE_TUNNEL_TOKEN` để không phải nhập lại trong phiên hiện tại.
+
+```bash
+CLOUDFLARE_TUNNEL_TOKEN='YOUR_TUNNEL_TOKEN' ./a.sh
+```
+
+Script hiển thị public IPv4 của VM, noVNC `IPv4:6080` và Proxmox `IPv4:8006` nếu các cổng đó được forward. Cloudflare Tunnel vẫn cần route/hostname được cấu hình trong Cloudflare Dashboard; token chỉ kết nối connector và không tự tạo public hostname.
 
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 
