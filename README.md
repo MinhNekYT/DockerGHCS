@@ -99,21 +99,23 @@ chmod +x xfce4.sh
 ./xfce4.sh
 ```
 
-Script `xfce4.sh` cài XFCE4, ưu tiên TigerVNC và dùng TightVNC làm fallback, cùng Google Chrome Stable. Script tạo cấu hình `~/.vnc/xstartup` để khởi động đúng phiên XFCE4 qua D-Bus, nhưng không lưu sẵn VNC password và không tự bật desktop session. Sau khi cài xong, chạy bằng user desktop:
+Script `xfce4.sh` cài XFCE4, ưu tiên TigerVNC và dùng TightVNC làm fallback, cùng Google Chrome Stable. Script tạo cấu hình `~/.vnc/xstartup` để khởi động đúng phiên XFCE4 qua D-Bus, nhưng không lưu sẵn VNC password và không tự bật desktop session. Sau khi tải xong mọi thứ, chạy bằng user desktop:
 
 ```bash
-xfce4-vnc-password
-xfce4-vnc-start
-xfce4-vnc-status
+./xfce4.sh -start
 ```
 
-Để dừng phiên VNC:
+Lệnh `-start` sẽ yêu cầu tạo VNC password nếu chưa có, sau đó tự khởi động phiên XFCE4 qua VNC và noVNC. Mặc định phiên là `:1`, tương ứng TCP port `5901`, còn noVNC dùng host port `6080`. Hãy mở cổng `6080` trong Codespaces/Ubuntu host để truy cập noVNC từ máy client.
+
+Các lệnh quản lý bổ sung:
 
 ```bash
-xfce4-vnc-stop
+./xfce4.sh -password
+./xfce4.sh -status
+./xfce4.sh -stop
 ```
 
-Mặc định phiên là `:1`, tương ứng TCP port `5901`; có thể đổi bằng `VNC_DISPLAY=:2`, `VNC_GEOMETRY=1920x1080` và `VNC_DEPTH=24` khi chạy script. Sau khi VNC chạy, hãy forward đúng port VNC trong Codespaces/Ubuntu host. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC ở cổng `6080` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
+Có thể đổi cấu hình bằng `VNC_DISPLAY=:2`, `NOVNC_PORT=6081`, `VNC_GEOMETRY=1920x1080` và `VNC_DEPTH=24` khi chạy script. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC ở cổng `6080` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
 
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 

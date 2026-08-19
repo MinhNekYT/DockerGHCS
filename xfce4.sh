@@ -10,6 +10,52 @@ INSTALL_USER="${INSTALL_USER:-${SUDO_USER:-${_REMOTE_USER:-${USER:-}}}}"
 VNC_DISPLAY="${VNC_DISPLAY:-:1}"
 VNC_GEOMETRY="${VNC_GEOMETRY:-1920x1080}"
 VNC_DEPTH="${VNC_DEPTH:-24}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+ACTION="install"
+
+case "${1:-}" in
+    "")
+        ;;
+    -start|--start)
+        ACTION="start"
+        shift
+        ;;
+    -stop|--stop)
+        ACTION="stop"
+        shift
+        ;;
+    -status|--status)
+        ACTION="status"
+        shift
+        ;;
+    -password|--password)
+        ACTION="password"
+        shift
+        ;;
+    -h|--help)
+        cat <<'EOF'
+Usage:
+  ./xfce4.sh             Install XFCE4, VNC, noVNC and Google Chrome
+  ./xfce4.sh -start      Start VNC + noVNC + XFCE4
+  ./xfce4.sh -password   Create or change the VNC password
+  ./xfce4.sh -status     Show VNC/noVNC status
+  ./xfce4.sh -stop       Stop VNC and noVNC
+
+Environment:
+  VNC_DISPLAY=:1       VNC display; :1 maps to TCP 5901
+  NOVNC_PORT=6080      noVNC HTTP/WebSocket port
+  VNC_GEOMETRY=1920x1080
+  VNC_DEPTH=24
+EOF
+        exit 0
+        ;;
+    *)
+        echo "Tham số không hợp lệ: ${1}" >&2
+        echo "Dùng ./xfce4.sh --help để xem hướng dẫn." >&2
+        exit 2
+        ;;
+esac
+
 CHROME_DEB="/tmp/google-chrome-stable_current_amd64.deb"
 CHROME_URL="https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
 
@@ -34,6 +80,7 @@ if [[ "${EUID}" -ne 0 ]]; then
         "VNC_DISPLAY=${VNC_DISPLAY}" \
         "VNC_GEOMETRY=${VNC_GEOMETRY}" \
         "VNC_DEPTH=${VNC_DEPTH}" \
+        "NOVNC_PORT=${NOVNC_PORT}" \
         bash "$0" "$@"
 fi
 
@@ -93,10 +140,27 @@ if [[ ! "${VNC_DEPTH}" =~ ^(16|24|32)$ ]]; then
     echo "VNC_DEPTH phải là 16, 24 hoặc 32; giá trị hiện tại: ${VNC_DEPTH}" >&2
     exit 1
 fi
+if [[ ! "${NOVNC_PORT}" =~ ^[1-9][0-9]*$ ]] || ((NOVNC_PORT > 65535)); then
+    echo "NOVNC_PORT phải là số nguyên trong khoảng 1-65535; giá trị hiện tại: ${NOVNC_PORT}" >&2
+    exit 1
+fi
+
+VNC_NUMBER="${VNC_DISPLAY#:}"
+VNC_PORT=$((5900 + VNC_NUMBER))
+if ((VNC_PORT > 65535)); then
+    echo "VNC_DISPLAY tạo ra port vượt quá 65535: ${VNC_DISPLAY}" >&2
+    exit 1
+fi
+if ((NOVNC_PORT == VNC_PORT)); then
+    echo "NOVNC_PORT không được trùng với VNC port ${VNC_PORT}." >&2
+    exit 1
+fi
 
 VNC_DIR="${INSTALL_HOME}/.vnc"
 VNC_XSTARTUP="${VNC_DIR}/xstartup"
 VNC_CONFIG="${VNC_DIR}/config"
+NOVNC_LOG="${VNC_DIR}/novnc.log"
+NOVNC_PID_FILE="${VNC_DIR}/novnc.pid"
 
 export HOME="${INSTALL_HOME}"
 export USER="${INSTALL_USER}"
@@ -287,27 +351,122 @@ exit 1
 EOF
 chmod 0755 /usr/local/bin/xfce4-vnc-status
 
+NOVNC_PROXY_BIN=""
+if command -v novnc_proxy >/dev/null 2>&1; then
+    NOVNC_PROXY_BIN="$(command -v novnc_proxy)"
+elif [[ -x /usr/share/novnc/utils/novnc_proxy ]]; then
+    NOVNC_PROXY_BIN="/usr/share/novnc/utils/novnc_proxy"
+fi
+if [[ -z "${NOVNC_PROXY_BIN}" ]]; then
+    echo "Không tìm thấy novnc_proxy. Hãy cài package novnc trước." >&2
+    exit 1
+fi
+
+cat > /usr/local/bin/xfce4-novnc-start <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+VNC_USER="${INSTALL_USER}"
+VNC_HOME="${INSTALL_HOME}"
+NOVNC_PROXY="${NOVNC_PROXY_BIN}"
+NOVNC_PORT="${NOVNC_PORT}"
+VNC_PORT="${VNC_PORT}"
+NOVNC_LOG="${NOVNC_LOG}"
+NOVNC_PID_FILE="${NOVNC_PID_FILE}"
+
+if [[ "\${EUID}" -eq 0 ]]; then
+    exec runuser -u "\${VNC_USER}" -- env HOME="\${VNC_HOME}" USER="\${VNC_USER}" LOGNAME="\${VNC_USER}" "\$0" "\$@"
+fi
+if [[ "\${USER}" != "\${VNC_USER}" ]]; then
+    echo "Hãy chạy lệnh này bằng user \${VNC_USER} hoặc dùng sudo." >&2
+    exit 1
+fi
+mkdir -p "\${HOME}/.vnc"
+if [[ -f "\${NOVNC_PID_FILE}" ]]; then
+    old_pid="\$(cat "\${NOVNC_PID_FILE}" 2>/dev/null || true)"
+    if [[ "\${old_pid}" =~ ^[0-9]+$ ]]; then
+        kill "\${old_pid}" 2>/dev/null || true
+    fi
+fi
+: > "\${NOVNC_LOG}"
+nohup "\${NOVNC_PROXY}" --listen "\${NOVNC_PORT}" --vnc "127.0.0.1:\${VNC_PORT}" \
+    >> "\${NOVNC_LOG}" 2>&1 &
+echo \$! > "\${NOVNC_PID_FILE}"
+sleep 2
+if ! kill -0 "\$(cat "\${NOVNC_PID_FILE}")" 2>/dev/null; then
+    echo "noVNC không khởi động được; xem \${NOVNC_LOG}." >&2
+    exit 1
+fi
+echo "noVNC đang chạy tại cổng \${NOVNC_PORT}; VNC origin 127.0.0.1:\${VNC_PORT}."
+EOF
+chmod 0755 /usr/local/bin/xfce4-novnc-start
+
+cat > /usr/local/bin/xfce4-novnc-stop <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+VNC_USER="${INSTALL_USER}"
+VNC_HOME="${INSTALL_HOME}"
+NOVNC_PID_FILE="${NOVNC_PID_FILE}"
+if [[ "\${EUID}" -eq 0 ]]; then
+    exec runuser -u "\${VNC_USER}" -- env HOME="\${VNC_HOME}" USER="\${VNC_USER}" LOGNAME="\${VNC_USER}" "\$0" "\$@"
+fi
+if [[ -f "\${NOVNC_PID_FILE}" ]]; then
+    pid="\$(cat "\${NOVNC_PID_FILE}" 2>/dev/null || true)"
+    if [[ "\${pid}" =~ ^[0-9]+$ ]]; then
+        kill "\${pid}" 2>/dev/null || true
+    fi
+    rm -f "\${NOVNC_PID_FILE}"
+fi
+EOF
+chmod 0755 /usr/local/bin/xfce4-novnc-stop
+
 command -v startxfce4 >/dev/null 2>&1
 command -v google-chrome >/dev/null 2>&1
 google-chrome --version
 
-cat <<EOF
+case "${ACTION}" in
+    install)
+        cat <<EOF
 
-Đã cài xong XFCE4, ${VNC_SERVER_BIN} và Google Chrome Stable.
+Đã cài xong XFCE4, ${VNC_SERVER_BIN}, noVNC và Google Chrome Stable.
 
 User desktop: ${INSTALL_USER}
-VNC display: ${VNC_DISPLAY} (thường tương ứng TCP $((5900 + ${VNC_DISPLAY#:})))
-Kích thước: ${VNC_GEOMETRY}, depth ${VNC_DEPTH}
+VNC display: ${VNC_DISPLAY} (TCP ${VNC_PORT})
+noVNC port: ${NOVNC_PORT}
 
 Tạo hoặc đổi VNC password:
-  xfce4-vnc-password
+  ./xfce4.sh -password
 
-Khởi động XFCE4 qua VNC:
-  xfce4-vnc-start
-
-Kiểm tra hoặc dừng:
-  xfce4-vnc-status
-  xfce4-vnc-stop
-
-Sau khi VNC chạy, mở cổng VNC tương ứng trong Codespaces/Ubuntu host.
+Khởi động toàn bộ VNC + noVNC + XFCE4:
+  ./xfce4.sh -start
 EOF
+        ;;
+    password)
+        exec /usr/local/bin/xfce4-vnc-password
+        ;;
+    start)
+        if [[ ! -f "${VNC_DIR}/passwd" ]]; then
+            echo "Chưa có VNC password; hãy tạo password ngay bây giờ."
+            /usr/local/bin/xfce4-vnc-password
+        fi
+        /usr/local/bin/xfce4-vnc-start
+        /usr/local/bin/xfce4-novnc-start
+        echo "XFCE4 + VNC + noVNC đã khởi động."
+        echo "VNC port: ${VNC_PORT}"
+        echo "noVNC đã lắng nghe tại host port ${NOVNC_PORT}; hãy mở URL do Codespaces/forwarded host cung cấp từ máy client."
+        ;;
+    stop)
+        /usr/local/bin/xfce4-novnc-stop || true
+        /usr/local/bin/xfce4-vnc-stop || true
+        echo "Đã dừng noVNC và VNC/XFCE4."
+        ;;
+    status)
+        /usr/local/bin/xfce4-vnc-status || true
+        if [[ -f "${NOVNC_PID_FILE}" ]] \
+            && kill -0 "$(cat "${NOVNC_PID_FILE}" 2>/dev/null)" 2>/dev/null; then
+            echo "noVNC đang chạy tại cổng ${NOVNC_PORT}."
+        else
+            echo "noVNC chưa chạy tại cổng ${NOVNC_PORT}."
+            exit 1
+        fi
+        ;;
+esac
