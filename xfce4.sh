@@ -20,17 +20,11 @@ case "${1:-}" in
         ACTION="start"
         shift
         ;;
-    -password|--password)
-        ACTION="password"
-        shift
-        ;;
     -h|--help)
         cat <<'EOF'
 Usage:
   ./xfce4.sh             Install XFCE4, VNC, noVNC and Google Chrome
   ./xfce4.sh -start      Start VNC + noVNC + XFCE4
-  ./xfce4.sh -password   Create or change the VNC password
-
   Press Ctrl+C while `-start` is running to stop VNC, noVNC and XFCE4.
 
 Environment:
@@ -293,7 +287,7 @@ if [[ "\${USER}" != "\${VNC_USER}" ]]; then
     exit 1
 fi
 if [[ ! -f "\${HOME}/.vnc/passwd" ]]; then
-    echo "Chưa có VNC password. Chạy: xfce4-vnc-password" >&2
+    echo "Chưa có VNC password. Chạy: xfce4-vnc-setup-auth" >&2
     exit 1
 fi
 "\${VNC_SERVER}" -kill "\${VNC_DISPLAY}" >/dev/null 2>&1 || true
@@ -301,7 +295,7 @@ exec "\${VNC_SERVER}" "\${VNC_DISPLAY}" -geometry "\${VNC_GEOMETRY}" -depth "\${
 EOF
 chmod 0755 /usr/local/bin/xfce4-vnc-start
 
-cat > /usr/local/bin/xfce4-vnc-password <<EOF
+cat > /usr/local/bin/xfce4-vnc-setup-auth <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 VNC_USER="${INSTALL_USER}"
@@ -313,7 +307,7 @@ mkdir -p "\${HOME}/.vnc"
 chmod 700 "\${HOME}/.vnc"
 exec vncpasswd "\${HOME}/.vnc/passwd"
 EOF
-chmod 0755 /usr/local/bin/xfce4-vnc-password
+chmod 0755 /usr/local/bin/xfce4-vnc-setup-auth
 
 NOVNC_PROXY_BIN=""
 if command -v novnc_proxy >/dev/null 2>&1; then
@@ -397,20 +391,16 @@ User desktop: ${INSTALL_USER}
 VNC display: ${VNC_DISPLAY} (TCP ${VNC_PORT})
 noVNC port: ${NOVNC_PORT}
 
-Tạo hoặc đổi VNC password:
-  ./xfce4.sh -password
+Khi chạy '-start', script sẽ tự tạo VNC password nếu chưa có.
 
 Khởi động toàn bộ VNC + noVNC + XFCE4:
   ./xfce4.sh -start
 EOF
         ;;
-    password)
-        exec /usr/local/bin/xfce4-vnc-password
-        ;;
     start)
         if [[ ! -f "${VNC_DIR}/passwd" ]]; then
             echo "Chưa có VNC password; hãy tạo password ngay bây giờ."
-            /usr/local/bin/xfce4-vnc-password
+            /usr/local/bin/xfce4-vnc-setup-auth
         fi
         trap cleanup_vnc INT TERM EXIT
         /usr/local/bin/xfce4-vnc-start
