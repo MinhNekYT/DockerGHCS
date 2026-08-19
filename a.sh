@@ -12,6 +12,8 @@ PROXMOX_ISO_PATH="/mnt/proxmox-ve_9.2-1.iso"
 PROXMOX_AUTO_ISO_PATH="/mnt/proxmox-ve_9.2-1-auto.iso"
 PROXMOX_ANSWER_PATH="/mnt/dockerghcs-proxmox-answer.toml"
 PROXMOX_FIRST_BOOT_PATH="/mnt/dockerghcs-proxmox-first-boot.sh"
+PROXMOX_AUTO_META_PATH="/mnt/dockerghcs-proxmox-auto.meta"
+PROXMOX_BOOT_FROM_DISK=0
 PROXMOX_ISO_BOOT_PATH="${PROXMOX_ISO_PATH}"
 PROXMOX_AUTO_INSTALL="${PROXMOX_AUTO_INSTALL:-1}"
 PROXMOX_ROOT_PASSWORD="${PROXMOX_ROOT_PASSWORD:-}"
@@ -170,9 +172,8 @@ install_docker() {
     # Codespaces thường đã có Docker/Moby. Nếu Compose hoạt động thì không
     # thay thế package, tránh lỗi dpkg khi cài docker-ce lần nữa.
     if command -v docker > /dev/null 2>&1 \
-        && docker compose version > /dev/null 2>&1 \
-        && docker info > /dev/null 2>&1; then
-        echo "Docker Compose và Docker daemon đã hoạt động. Không cài đè Docker package."
+        && docker compose version > /dev/null 2>&1; then
+        echo "Docker CLI và Compose đã có; không gỡ package hiện tại."
     else
         echo ""
         echo "=== Khôi phục trạng thái apt/dpkg nếu lần chạy trước bị gián đoạn ==="
@@ -268,7 +269,7 @@ EOF
     if docker info > /dev/null 2>&1; then
         echo "Docker daemon đang hoạt động."
     else
-        if command -v systemctl > /dev/null 2>&1; then
+        if [[ -d /run/systemd/system ]] && command -v systemctl > /dev/null 2>&1; then
             systemctl enable --now docker 2>/dev/null || true
         fi
         if ! docker info > /dev/null 2>&1 && command -v service > /dev/null 2>&1; then
@@ -616,25 +617,43 @@ install_proxmox_auto_install_assistant() {
     }
 }
 
+disk_has_partition_table() {
+    local image_path="$1"
+    local mbr_signature gpt_signature
+    [[ -s "${image_path}" ]] || return 1
+    mbr_signature="$(dd if="${image_path}" bs=1 skip=510 count=2 2>/dev/null \
+        | od -An -tx1 | tr -d '[:space:]')"
+    gpt_signature="$(dd if="${image_path}" bs=1 skip=512 count=8 2>/dev/null \
+        | od -An -tx1 | tr -d '[:space:]')"
+    [[ "${mbr_signature}" == "55aa" || "${gpt_signature}" == "4546492050415254" ]]
+}
+
 prepare_proxmox_auto_install_iso() {
     PROXMOX_ISO_BOOT_PATH="${PROXMOX_ISO_PATH}"
     if [[ "${PROXMOX_AUTO_INSTALL}" != "1" ]]; then
         echo "PROXMOX_AUTO_INSTALL=${PROXMOX_AUTO_INSTALL}; dùng cài đặt Proxmox thủ công."
         return 0
     fi
-    if [[ -e "${PROXMOX_AUTO_ISO_PATH}" ]]; then
-        echo "Đã tìm thấy auto-install ISO ${PROXMOX_AUTO_ISO_PATH}; giữ nguyên."
+
+    local desired_meta root_password_hash escaped_fqdn escaped_country escaped_timezone
+    read_proxmox_root_password
+    root_password_hash="$(printf '%s\n' "${PROXMOX_ROOT_PASSWORD}" \
+        | openssl passwd -6 -salt dockerghcs -stdin)"
+    desired_meta="$(printf 'fqdn=%s\ncountry=%s\ntimezone=%s\nroot-password-hashed=%s\n' \
+        "${PROXMOX_FQDN}" "${PROXMOX_COUNTRY}" "${PROXMOX_TIMEZONE}" \
+        "${root_password_hash}")"
+    if [[ -e "${PROXMOX_AUTO_ISO_PATH}" && -f "${PROXMOX_AUTO_META_PATH}" ]] \
+        && printf '%s' "${desired_meta}" | cmp -s - "${PROXMOX_AUTO_META_PATH}"; then
+        echo "Đã tìm thấy auto-install ISO phù hợp; giữ nguyên."
         validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"
         PROXMOX_ISO_BOOT_PATH="${PROXMOX_AUTO_ISO_PATH}"
         return 0
     fi
+    rm -f "${PROXMOX_AUTO_ISO_PATH}" "${PROXMOX_AUTO_META_PATH}" \
+        "${PROXMOX_ANSWER_PATH}" "${PROXMOX_FIRST_BOOT_PATH}"
 
-    read_proxmox_root_password
     install_proxmox_auto_install_assistant
 
-    local root_password_hash escaped_fqdn escaped_country escaped_timezone
-    root_password_hash="$(printf '%s\n' "${PROXMOX_ROOT_PASSWORD}" \
-        | openssl passwd -6 -stdin)"
     escaped_fqdn="${PROXMOX_FQDN//\\/\\\\}"
     escaped_fqdn="${escaped_fqdn//\"/\\\"}"
     escaped_country="${PROXMOX_COUNTRY//\"/\\\"}"
@@ -662,6 +681,7 @@ source = "from-iso"
 ordering = "fully-up"
 EOF
     chmod 600 "${PROXMOX_ANSWER_PATH}"
+    unset PROXMOX_ROOT_PASSWORD
 
     cat > "${PROXMOX_FIRST_BOOT_PATH}" <<'EOF'
 #!/bin/sh
@@ -713,6 +733,8 @@ EOF
         --on-first-boot "${PROXMOX_FIRST_BOOT_PATH}" \
         --output "${PROXMOX_AUTO_ISO_PATH}"
     validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"
+    printf '%s' "${desired_meta}" > "${PROXMOX_AUTO_META_PATH}"
+    chmod 600 "${PROXMOX_AUTO_META_PATH}"
     PROXMOX_ISO_BOOT_PATH="${PROXMOX_AUTO_ISO_PATH}"
     echo "Auto-install ISO đã sẵn sàng: ${PROXMOX_ISO_BOOT_PATH}"
 }
@@ -869,8 +891,14 @@ start_proxmox() {
     check_kvm_for_proxmox
     mount_storage
     download_proxmox_iso
-    prepare_proxmox_auto_install_iso
     ensure_proxmox_disk
+    if disk_has_partition_table "${PROXMOX_DISK_PATH}"; then
+        PROXMOX_BOOT_FROM_DISK=1
+        PROXMOX_ISO_BOOT_PATH=""
+        echo "Phát hiện Proxmox đã có partition table; bỏ qua cài lại và boot disk hiện tại."
+    else
+        prepare_proxmox_auto_install_iso
+    fi
     find_ovmf
 
     if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)5900$'; then
@@ -900,6 +928,12 @@ start_proxmox() {
     local pflash_args=(
         -drive "if=pflash,format=raw,readonly=on,file=${OVMF_CODE_PATH}"
     )
+    local boot_args=(-boot "menu=on,once=d")
+    local cdrom_args=(-cdrom "${PROXMOX_ISO_BOOT_PATH}")
+    if [[ "${PROXMOX_BOOT_FROM_DISK}" == "1" ]]; then
+        boot_args=(-boot order=c)
+        cdrom_args=()
+    fi
     if [[ -n "${OVMF_VARS_TEMPLATE}" && -e "${OVMF_VARS_PATH}" ]]; then
         pflash_args+=(
             -drive "if=pflash,format=raw,readonly=off,file=${OVMF_VARS_PATH}"
@@ -935,13 +969,13 @@ start_proxmox() {
         -vga virtio \
         -netdev "user,id=n0,ipv4=on,ipv6=off,dns=10.0.2.3,hostfwd=tcp::${PROXMOX_GUEST_PORT}-:8006" \
         -device virtio-net-pci,netdev=n0 \
-        -boot menu=on,once=d \
+        "${boot_args[@]}" \
         -device virtio-serial-pci \
         -device virtio-rng-pci \
         -audiodev driver=none,id=noaudio \
         -drive "file=${PROXMOX_DISK_PATH},format=raw" \
         "${pflash_args[@]}" \
-        -cdrom "${PROXMOX_ISO_BOOT_PATH}" \
+        "${cdrom_args[@]}" \
         -uuid e47ddb84-fb4d-46f9-b531-14bb15156336 \
         -vnc 127.0.0.1:0 \
         > "${PROXMOX_QEMU_LOG}" 2>&1 &

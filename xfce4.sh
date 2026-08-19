@@ -130,6 +130,10 @@ if [[ ! "${NOVNC_PORT}" =~ ^[1-9][0-9]*$ ]] || ((NOVNC_PORT > 65535)); then
     echo "NOVNC_PORT phải là số nguyên trong khoảng 1-65535; giá trị hiện tại: ${NOVNC_PORT}" >&2
     exit 1
 fi
+if ((NOVNC_PORT >= 5900 && NOVNC_PORT <= 5999)); then
+    echo "NOVNC_PORT không được dùng dải VNC 5900-5999; giá trị hiện tại: ${NOVNC_PORT}" >&2
+    exit 1
+fi
 
 VNC_NUMBER="${VNC_DISPLAY#:}"
 VNC_PORT=$((5900 + VNC_NUMBER))
@@ -286,6 +290,22 @@ if [[ -z "${NOVNC_PROXY_BIN}" ]]; then
     exit 1
 fi
 
+wait_for_tcp_port() {
+    local port="$1"
+    local timeout_seconds="${2:-30}"
+    local elapsed=0
+    while ((elapsed < timeout_seconds)); do
+        if ss -ltn 2>/dev/null \
+            | awk '{print $4}' \
+            | grep -Eq "(^|:)${port}$"; then
+            return 0
+        fi
+        sleep 1
+        ((elapsed += 1))
+    done
+    return 1
+}
+
 cleanup_vnc() {
     local exit_code=$?
     trap - INT TERM EXIT
@@ -351,7 +371,15 @@ EOF
             >> "${NOVNC_LOG}" 2>&1 &
         NOVNC_PID=$!
         printf '%s\n' "${NOVNC_PID}" > "${NOVNC_PID_FILE}"
-        sleep 2
+        if ! wait_for_tcp_port "${VNC_PORT}" 30; then
+            echo "VNC chưa mở port ${VNC_PORT}; xem phiên XFCE4/VNC và ${VNC_XSTARTUP}." >&2
+            exit 1
+        fi
+        if ! wait_for_tcp_port "${NOVNC_PORT}" 30; then
+            echo "noVNC chưa mở port ${NOVNC_PORT}; xem ${NOVNC_LOG}." >&2
+            tail -n 50 "${NOVNC_LOG}" >&2 || true
+            exit 1
+        fi
         if ! kill -0 "${NOVNC_PID}" 2>/dev/null; then
             echo "noVNC không khởi động được; xem ${NOVNC_LOG}." >&2
             exit 1

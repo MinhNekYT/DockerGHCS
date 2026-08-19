@@ -1,0 +1,42 @@
+name: Validate DockerGHCS scripts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Validate Bash scripts
+        run: |
+          bash -n a.sh
+          bash -n xfce4.sh
+          shellcheck -x a.sh
+          shellcheck -x xfce4.sh
+
+      - name: Validate Compose files
+        run: |
+          docker compose -f windows.yaml config -q
+          docker compose -f macos.yaml config -q
+
+      - name: Check forbidden stale references
+        run: |
+          if grep -RInE --exclude-dir=.git --exclude=validate.yml \
+            'cloudflare|cloudflared|YourStrongPassword|disk_list|pve\.lan|6080|frierencloud' .; then
+            echo "Found forbidden stale reference." >&2
+            exit 1
+          fi
