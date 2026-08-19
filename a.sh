@@ -17,13 +17,8 @@ MIN_FREE_KB=$((10 * 1024 * 1024))
 DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
 PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
-CLOUDFLARED_LOG="/tmp/dockerghcs-cloudflared.log"
-CLOUDFLARED_APT_LOG="/tmp/dockerghcs-cloudflared-apt.log"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 PROXMOX_GUEST_PORT="${PROXMOX_GUEST_PORT:-8006}"
-CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
-CLOUDFLARE_PROXMOX_HOSTNAME="${CLOUDFLARE_PROXMOX_HOSTNAME:-}"
-CLOUDFLARE_NOVNC_HOSTNAME="${CLOUDFLARE_NOVNC_HOSTNAME:-}"
 QEMU_VNC_TIMEOUT="${QEMU_VNC_TIMEOUT:-60}"
 WINDOWS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/windows.yaml"
 MACOS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/macos.yaml"
@@ -52,10 +47,6 @@ on_error() {
     if [[ -s "${PROXMOX_NOVNC_LOG}" ]]; then
         echo "Nhật ký noVNC gần nhất:"
         tail -n 40 "${PROXMOX_NOVNC_LOG}"
-    fi
-    if [[ -s "${CLOUDFLARED_LOG}" ]]; then
-        echo "Nhật ký cloudflared gần nhất:"
-        tail -n 40 "${CLOUDFLARED_LOG}"
     fi
     exit "${exit_code}"
 }
@@ -103,38 +94,12 @@ if [[ "${EUID}" -ne 0 ]]; then
     )
     # Codespaces có thể dùng DOCKER_HOST/DOCKER_CONTEXT để trỏ tới daemon bên ngoài.
     # Giữ các biến này khi chuyển sang root, nếu không script sẽ tưởng Docker bị hỏng.
-    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT CLOUDFLARE_PROXMOX_HOSTNAME CLOUDFLARE_NOVNC_HOSTNAME QEMU_VNC_TIMEOUT; do
+    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT QEMU_VNC_TIMEOUT; do
         if [[ -n "${!docker_env_name:-}" ]]; then
             sudo_environment+=("${docker_env_name}=${!docker_env_name}")
         fi
     done
-    # Không đưa token vào command line của `sudo env`, vì command line có thể
-    # bị nhìn thấy qua ps. Ghi tạm token vào file mode 600 rồi đọc lại ở root.
-    if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
-        token_env_file="$(mktemp /tmp/dockerghcs-cloudflare-token.XXXXXX)"
-        chmod 600 "${token_env_file}"
-        printf '%s' "${CLOUDFLARE_TUNNEL_TOKEN}" > "${token_env_file}"
-        sudo_environment+=("CLOUDFLARE_TUNNEL_TOKEN_FILE=${token_env_file}")
-    else
-        token_env_file=""
-    fi
-    if sudo env "${sudo_environment[@]}" bash "$0"; then
-        sudo_status=0
-    else
-        sudo_status=$?
-    fi
-    [[ -z "${token_env_file}" ]] || rm -f "${token_env_file}"
-    exit "${sudo_status}"
-fi
-
-if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN_FILE:-}" ]]; then
-    if [[ ! -r "${CLOUDFLARE_TUNNEL_TOKEN_FILE}" ]]; then
-        echo "Không đọc được file token Cloudflare tạm thời." >&2
-        exit 1
-    fi
-    CLOUDFLARE_TUNNEL_TOKEN="$(cat "${CLOUDFLARE_TUNNEL_TOKEN_FILE}")"
-    rm -f "${CLOUDFLARE_TUNNEL_TOKEN_FILE}"
-    unset CLOUDFLARE_TUNNEL_TOKEN_FILE
+    exec sudo env "${sudo_environment[@]}" bash "$0"
 fi
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -500,128 +465,6 @@ proxmox_tools_ready() {
         && command -v cpulimit > /dev/null 2>&1
 }
 
-install_cloudflared() {
-    if command -v cloudflared > /dev/null 2>&1; then
-        echo "cloudflared đã có sẵn; bỏ qua cài đặt."
-        return 0
-    fi
-
-    echo "=== Cài cloudflared từ repository Cloudflare ==="
-    apt-get update > "${CLOUDFLARED_APT_LOG}" 2>&1
-    install -d -m 0755 /usr/share/keyrings
-    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-        | tee /usr/share/keyrings/cloudflare-main.gpg > /dev/null
-    printf '%s\n' \
-        'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
-        | tee /etc/apt/sources.list.d/cloudflared.list > /dev/null
-    apt-get update > "${CLOUDFLARED_APT_LOG}" 2>&1
-    apt-get install -y cloudflared >> "${CLOUDFLARED_APT_LOG}" 2>&1
-    command -v cloudflared > /dev/null 2>&1 || {
-        echo "Cài cloudflared thất bại; xem ${CLOUDFLARED_APT_LOG}."
-        exit 1
-    }
-}
-
-get_public_ipv4() {
-    local public_ipv4=""
-    if command -v curl > /dev/null 2>&1; then
-        public_ipv4="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
-        if [[ -z "${public_ipv4}" ]]; then
-            public_ipv4="$(curl -4 -fsS --max-time 10 https://ifconfig.me 2>/dev/null || true)"
-        fi
-    fi
-    if [[ "${public_ipv4}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-        printf '%s' "${public_ipv4}"
-    else
-        printf '%s' "unknown"
-    fi
-}
-
-configure_cloudflared() {
-    local token="${CLOUDFLARE_TUNNEL_TOKEN}"
-    local public_ipv4
-    local systemd_available=0
-    local service_exists=0
-
-    if command -v systemctl > /dev/null 2>&1 \
-        && [[ -d /run/systemd/system ]] \
-        && systemctl is-system-running > /dev/null 2>&1; then
-        systemd_available=1
-        if systemctl cat cloudflared.service > /dev/null 2>&1; then
-            service_exists=1
-        fi
-    fi
-
-    if ((systemd_available == 1 && service_exists == 1)); then
-        if systemctl is-active --quiet cloudflared 2>/dev/null; then
-            echo "cloudflared service đã chạy; không hỏi lại token."
-        else
-            echo "cloudflared service đã tồn tại; khởi động service hiện có mà không hỏi lại token."
-            if ! systemctl daemon-reload >> "${CLOUDFLARED_LOG}" 2>&1 \
-                || ! systemctl enable --now cloudflared >> "${CLOUDFLARED_LOG}" 2>&1; then
-                echo "Không thể khởi động cloudflared service hiện có; xem ${CLOUDFLARED_LOG}."
-                exit 1
-            fi
-        fi
-    else
-        if [[ -z "${token}" ]]; then
-            printf 'Nhập Cloudflare Tunnel service token (ẩn, không lưu vào repo): ' >&2
-            read -r -s token
-            printf '\n' >&2
-        fi
-        if [[ -z "${token}" ]]; then
-            echo "Cloudflare Tunnel token không được để trống."
-            exit 1
-        fi
-
-        if ((systemd_available == 1)); then
-            echo "Cài cloudflared service; token không được ghi vào repository."
-            if ! cloudflared service install "${token}" > "${CLOUDFLARED_LOG}" 2>&1; then
-                echo "cloudflared service install thất bại; xem ${CLOUDFLARED_LOG}."
-                unset token
-                exit 1
-            fi
-            if ! systemctl enable --now cloudflared >> "${CLOUDFLARED_LOG}" 2>&1; then
-                echo "cloudflared service không khởi động được sau khi cài; xem ${CLOUDFLARED_LOG}."
-                unset token
-                exit 1
-            fi
-        else
-            echo "systemd không khả dụng; chạy cloudflared tunnel trực tiếp trong nền."
-            : > "${CLOUDFLARED_LOG}"
-            nohup cloudflared tunnel --no-autoupdate run --token "${token}" \
-                >> "${CLOUDFLARED_LOG}" 2>&1 &
-            CLOUDFLARED_PID=$!
-            sleep 3
-            if ! kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
-                echo "cloudflared không khởi động được; xem ${CLOUDFLARED_LOG}."
-                unset token
-                exit 1
-            fi
-        fi
-        unset token
-    fi
-
-    public_ipv4="$(get_public_ipv4)"
-    echo "Cloudflare Tunnel đã được khởi động hoặc đang hoạt động."
-    echo "Public IPv4 của VM: ${public_ipv4}"
-    echo "Origin Proxmox nội bộ: 127.0.0.1:${PROXMOX_GUEST_PORT} (chỉ dành cho Cloudflare route; không mở địa chỉ localhost này)."
-    echo "Origin noVNC nội bộ: 127.0.0.1:${NOVNC_PORT} (chỉ dành cho Cloudflare route; không mở địa chỉ localhost này)."
-    echo "Direct IPv4 endpoint Proxmox: http://${public_ipv4}:${PROXMOX_GUEST_PORT} nếu host/network đã forward port."
-    echo "Direct IPv4 endpoint noVNC: http://${public_ipv4}:${NOVNC_PORT} nếu host/network đã forward port."
-    if [[ -n "${CLOUDFLARE_PROXMOX_HOSTNAME}" ]]; then
-        echo "Cloudflare Proxmox URL: https://${CLOUDFLARE_PROXMOX_HOSTNAME}"
-    else
-        echo "Cloudflare Proxmox URL: mở hostname đã cấu hình trong Cloudflare Dashboard."
-    fi
-    if [[ -n "${CLOUDFLARE_NOVNC_HOSTNAME}" ]]; then
-        echo "Cloudflare noVNC URL: https://${CLOUDFLARE_NOVNC_HOSTNAME}"
-    else
-        echo "Cloudflare noVNC URL: mở hostname đã cấu hình trong Cloudflare Dashboard."
-    fi
-    echo "Không mở các origin nội bộ 127.0.0.1 từ máy client; hãy dùng URL direct IPv4 hoặc hostname Cloudflare ở trên."
-}
-
 install_proxmox_packages() {
     if proxmox_tools_ready; then
         echo ""
@@ -845,9 +688,6 @@ cleanup_proxmox() {
     if [[ -n "${QEMU_PID:-}" ]] && kill -0 "${QEMU_PID}" 2>/dev/null; then
         kill "${QEMU_PID}" 2>/dev/null || true
     fi
-    if [[ -n "${CLOUDFLARED_PID:-}" ]] && kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
-        kill "${CLOUDFLARED_PID}" 2>/dev/null || true
-    fi
 }
 
 start_proxmox() {
@@ -952,9 +792,6 @@ start_proxmox() {
     echo "noVNC: cổng ${NOVNC_PORT}; Proxmox hostfwd: cổng ${PROXMOX_GUEST_PORT} -> guest:8006."
     echo "Paste không cần clipboard hệ điều hành: mở panel Clipboard trong noVNC, nhập text rồi bấm Send."
     echo "Clipboard chỉ được dùng khi bạn chủ động Copy/Send nội dung trong panel noVNC."
-    install_cloudflared
-    configure_cloudflared
-    unset CLOUDFLARE_TUNNEL_TOKEN
     wait "${QEMU_PID}"
 }
 

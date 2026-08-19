@@ -1,8 +1,8 @@
 # DockerGHCS
 
-DockerGHCS chạy Windows trong container Docker thông qua [dockur/windows](https://github.com/dockur/windows). Script `a.sh` cài hoặc kiểm tra Docker, chuẩn bị storage, tải Windows ISO và VirtIO driver, sau đó khởi động Docker Compose.
+DockerGHCS hỗ trợ ba lựa chọn: **Windows** và **macOS** chạy trong Docker thông qua [dockur/windows](https://github.com/dockur/windows) và [dockurr/macos](https://github.com/dockur/macos), cùng **Proxmox VE** chạy trực tiếp qua QEMU/KVM. Script `a.sh` tự kiểm tra package, storage, Docker hoặc QEMU/KVM rồi khởi động đúng lựa chọn trong menu.
 
-> **Lưu ý quan trọng:** Máy chủ phải có Docker daemon đang hoạt động và thiết bị `/dev/kvm` có quyền đọc/ghi. GitHub Codespaces không phải lúc nào cũng cấp KVM hoặc Docker daemon; nếu thiếu một trong hai điều kiện này, Windows container không thể chạy đúng.
+> **Lưu ý quan trọng:** Windows và macOS cần Docker daemon cùng `/dev/kvm`; Proxmox cần QEMU/KVM hoặc TCG fallback, firmware OVMF và đủ storage. GitHub Codespaces không phải lúc nào cũng cấp Docker daemon hoặc KVM, vì vậy khả năng chạy thực tế phụ thuộc vào Codespace/Ubuntu host.
 
 ## Cách sử dụng
 
@@ -34,19 +34,13 @@ Nếu package, Docker daemon, QEMU/KVM, OVMF và noVNC đã có sẵn, script s�
 
 ## Cấu hình hiện tại
 
-| Thành phần | Giá trị |
-|---|---|
-| Image | `ghcr.io/dockur/windows` |
-| RAM | `half` |
-| CPU | `max` |
-| Disk ảo | `400G` |
-| Windows user | `windowsghcs` |
-| Windows password | `123456` |
-| Web viewer | Host port `8006` (mở bằng địa chỉ host/forwarded) |
-| RDP | Cổng `3389` TCP/UDP |
-| Thiết bị | `/dev/kvm`, `/dev/net/tun` |
+| Lựa chọn | Cách chạy | Cổng chính |
+|---|---|---|
+| Windows | Docker Compose với `ghcr.io/dockur/windows` | Web viewer `8006`, RDP `3389` TCP/UDP |
+| macOS | Docker Compose với `dockurr/macos` | Web viewer `8006`, VNC `5900` |
+| Proxmox | QEMU/KVM trực tiếp với OVMF và noVNC | noVNC `6080`, hostfwd `8006 → 8006` |
 
-`a.sh` cũng truyền VirtIO driver vào QEMU bằng `ARGUMENTS` và mount storage/ISO theo đúng đường dẫn mà Compose sử dụng.
+Windows dùng `RAM_SIZE: "half"`, `CPU_CORES: "max"`, `DISK_SIZE: "400G"`, user `windowsghcs`, password `123456`, `/dev/kvm` và `/dev/net/tun`. `a.sh` truyền VirtIO driver vào QEMU bằng `ARGUMENTS` và mount storage/ISO theo đúng đường dẫn mà Compose sử dụng. macOS dùng `VERSION: "15"`, không có `USERNAME` hoặc `PASSWORD`, và không hỏi Windows ISO.
 
 ## Nếu gặp lỗi Docker
 
@@ -85,7 +79,7 @@ Theo tài liệu chính thức của dockur/macos, macOS được cung cấp b�
 
 ## Proxmox qua QEMU/KVM
 
-Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM. Theo phương án 2, QEMU chuyển tiếp riêng host port `8006` vào guest port `8006`, còn noVNC chạy ở host port `6080`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip`, `python3-pip` và `cloudflared`; `psmisc` cung cấp `fuser` để dừng process trên dải cổng; nếu Ubuntu repository có package `qemu-kvm` thì cũng cài thêm; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900`, noVNC ở cổng `6080` và Proxmox Web UI qua hostfwd `8006`. NIC dùng `virtio-net-pci` với QEMU user-mode IPv4, DHCP gateway mặc định `10.0.2.2`, DNS proxy `10.0.2.3` và tắt IPv6 để tránh lỗi khi một repository trả về địa chỉ IPv6.
+Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM. Theo phương án 2, QEMU chuyển tiếp riêng host port `8006` vào guest port `8006`, còn noVNC chạy ở host port `6080`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip` và `python3-pip`; `psmisc` cung cấp `fuser` để dừng process trên dải cổng; nếu Ubuntu repository có package `qemu-kvm` thì cũng cài thêm; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900`, noVNC ở cổng `6080` và Proxmox Web UI qua hostfwd `8006`. NIC dùng `virtio-net-pci` với QEMU user-mode IPv4, DHCP gateway mặc định `10.0.2.2`, DNS proxy `10.0.2.3` và tắt IPv6 để tránh lỗi khi một repository trả về địa chỉ IPv6.
 
 Cấu hình Proxmox dùng hostfwd **chỉ cho cổng 8006** theo phương án 2: host `8006` → guest `8006`. noVNC dùng host port `6080`. Script kiểm tra để hai cổng không trùng nhau và không nằm trong dải VNC `5900–5999`; trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port `5900–5999`, nên chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. QEMU vẫn dùng user-mode networking cho kết nối outbound qua NIC virtio. Sau khi Proxmox installer khởi động, chọn cấu hình mạng DHCP cho interface virtio; kiểm tra gateway bằng `ip route` và kiểm tra DNS bằng `getent hosts download.proxmox.com`.
 
@@ -95,20 +89,17 @@ QEMU được chạy trực tiếp, không bọc bằng `cpulimit`, để PID v�
 
 noVNC đã có panel **Clipboard** riêng. Để dán text vào Proxmox mà không cần cấp quyền clipboard cho trình duyệt hoặc dùng clipboard hệ điều hành, hãy mở panel **Clipboard**, nhập hoặc dán text vào ô của panel rồi bấm **Send**. Cách này gửi nội dung qua API VNC đến máy ảo; nó không yêu cầu Ctrl+V trực tiếp trên canvas. Chỉ dùng nút **Copy/Send** trong panel khi bạn chủ động muốn truyền hoặc nhận nội dung clipboard.
 
-### Cloudflare Tunnel
+### Kết nối Proxmox qua XFCE4
 
-Sau khi QEMU và noVNC sẵn sàng, script cài `cloudflared` từ repository chính thức Cloudflare nếu chưa có. Script yêu cầu nhập **Tunnel service token** bằng chế độ ẩn; token không được ghi vào `README.md`, `a.sh` hoặc commit Git. Khi chạy bằng user thường, token không được đưa vào danh sách đối số của `sudo`; script truyền qua file tạm mode `600`, đọc lại một lần ở root rồi xóa file. Có thể truyền token qua biến môi trường `CLOUDFLARE_TUNNEL_TOKEN` để không phải nhập lại trong phiên hiện tại. Nếu muốn script in trực tiếp hostname public sau khi khởi động, truyền thêm `CLOUDFLARE_PROXMOX_HOSTNAME` và `CLOUDFLARE_NOVNC_HOSTNAME`.
+Để chuẩn bị môi trường desktop dùng khi kết nối và thao tác với Proxmox trong Codespace/Ubuntu, tải và chạy `xfce4.sh`:
 
 ```bash
-CLOUDFLARE_TUNNEL_TOKEN='YOUR_TUNNEL_TOKEN' \
-CLOUDFLARE_PROXMOX_HOSTNAME='proxmox.example.com' \
-CLOUDFLARE_NOVNC_HOSTNAME='novnc.example.com' \
-./a.sh
+wget https://raw.githubusercontent.com/MinhNekYT/WindowsGHCS/main/xfce4.sh
+chmod +x xfce4.sh
+./xfce4.sh
 ```
 
-Script hiển thị public IPv4 của VM cùng direct endpoint `IPv4:6080` cho noVNC và `IPv4:8006` cho Proxmox nếu các cổng đó được forward. Script không dùng `http://localhost` hoặc `http://127.0.0.1` làm địa chỉ để người dùng mở từ máy client. Hai origin nội bộ `127.0.0.1:6080` và `127.0.0.1:8006` chỉ dành cho Cloudflare route. Khi dùng Tunnel, hãy mở hostname Cloudflare đã cấu hình, ví dụ `https://novnc.example.com` hoặc `https://proxmox.example.com`; token chỉ kết nối connector và không tự tạo public hostname.
-
-Trong Cloudflare Dashboard, cấu hình origin noVNC tới `http://127.0.0.1:6080` và origin Proxmox tới `https://127.0.0.1:8006`; với Proxmox dùng chứng chỉ tự ký, bật `noTLSVerify` trong origin request. Đây là địa chỉ origin nội bộ của Tunnel, không phải URL để mở trên máy client.
+Script `xfce4.sh` cài XFCE4, TightVNC và Google Chrome Stable. Script không cài display manager và không tự bật desktop session; sau khi cài xong, cần sử dụng phương thức VNC/RDP hoặc desktop forwarding phù hợp với Codespace/Ubuntu host. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC ở cổng `6080` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
 
 Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nhỏ hơn 400G, script sẽ mở rộng ổ; nếu ổ lớn hơn, script giữ nguyên và không thu nhỏ. Có thể đổi dung lượng trước khi chạy:
 
@@ -116,7 +107,7 @@ Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nh�
 sudo PROXMOX_DISK_SIZE=128G ./a.sh
 ```
 
-Host có `/dev/kvm` với quyền đọc/ghi thì script dùng KVM và CPU model `host`; nếu Codespace không cấp KVM, script tự dùng TCG với CPU model `max`, có thể chậm hơn nhưng không dừng chỉ vì thiếu `/dev/kvm`. Cần đủ dung lượng trống cho ISO và raw disk. Trình tải ISO hỗ trợ cả `curl` và `wget`, sau đó kiểm tra kích thước và SHA256 Proxmox. Lần cài đầu tiên boot từ ISO; sau khi cài xong, nếu muốn boot ổ đĩa thay vì ISO, đổi `-boot order=d,menu=on` thành `-boot c` trong `a.sh` hoặc xóa ISO sau khi tắt QEMU.
+Host có `/dev/kvm` với quyền đọc/ghi thì script dùng KVM và CPU model `host`; nếu Codespace không cấp KVM, script tự dùng TCG với CPU model `max`, có thể chậm hơn nhưng không dừng chỉ vì thiếu `/dev/kvm`. Cần đủ dung lượng trống cho ISO và raw disk. Trình tải ISO hỗ trợ cả `curl` và `wget`, sau đó kiểm tra kích thước và SHA256 Proxmox. Dự án không còn cài đặt hoặc sử dụng Cloudflare Tunnel; kết nối Proxmox dùng port forwarding của Codespace/Ubuntu host và hướng dẫn XFCE4 ở trên. Lần cài đầu tiên boot từ ISO; sau khi cài xong, nếu muốn boot ổ đĩa thay vì ISO, đổi `-boot order=d,menu=on` thành `-boot c` trong `a.sh` hoặc xóa ISO sau khi tắt QEMU.
 
 ## Giấy phép
 

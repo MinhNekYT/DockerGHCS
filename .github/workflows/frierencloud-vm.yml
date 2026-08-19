@@ -13,7 +13,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt update
-          sudo apt install -y qemu-system-x86 qemu-utils genisoimage cloudflared p7zip-full wget curl
+          sudo apt install -y qemu-system-x86 qemu-utils genisoimage p7zip-full wget curl
           
           # Chỉ cấp quyền nếu /dev/kvm tồn tại (tránh lỗi thoát chương trình)
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
@@ -82,29 +82,11 @@ jobs:
             -nographic \
             -no-reboot || echo "Cài đặt thành công hoặc đã đạt thời gian giới hạn."
 
-      - name: Start Cloudflare Tunnel & Boot Proxmox VE
+      - name: Boot Proxmox VE
         run: |
-          cloudflared tunnel --url https://localhost:8006 --no-tls-verify > cloudflared.log 2>&1 &
-          
-          echo "Đang khởi tạo đường truyền Cloudflare Tunnel..."
-          URL=""
-          for i in {1..30}; do
-            # Bọc "|| true" để Github Actions không bị sập do Pipefail Exit Code 1 khi grep chưa tìm thấy link
-            URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflared.log | head -n 1 || true)
-            if [ -n "$URL" ]; then
-              break
-            fi
-            sleep 1
-          done
-
           echo "=================================================="
-          if [ -n "$URL" ]; then
-            echo "TRUY CẬP PROXMOX WEB UI TẠI LINK DƯỚI ĐÂY:"
-            echo "$URL"
-          else
-            echo "LỖI: Không lấy được Cloudflare URL. Chi tiết log:"
-            cat cloudflared.log
-          fi
+          echo "Khởi động Proxmox VE bằng QEMU user-mode networking."
+          echo "Web UI dùng hostfwd TCP 8006 -> guest 8006 nếu runner cho phép truy cập."
           echo "Tài khoản: root"
           echo "Mật khẩu: YourStrongPassword123"
           echo "=================================================="
