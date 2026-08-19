@@ -183,6 +183,8 @@ apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg \
+    novnc \
+    websockify \
     "${VNC_PACKAGES[@]}"
 
 if ! command -v "${VNC_SERVER_BIN}" >/dev/null 2>&1; then
