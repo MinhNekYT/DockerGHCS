@@ -79,7 +79,22 @@ Theo tài liệu chính thức của dockur/macos, macOS được cung cấp b�
 
 ## Proxmox qua QEMU/KVM
 
-Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM. Theo phương án 2, QEMU chuyển tiếp riêng host port `8006` vào guest port `8006`, còn noVNC chạy ở host port `8888`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip` và `python3-pip`; `psmisc` cung cấp `fuser` để dừng process trên dải cổng; nếu Ubuntu repository có package `qemu-kvm` thì cũng cài thêm; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900`, noVNC ở cổng `8888` và Proxmox Web UI qua hostfwd `8006`. NIC dùng `virtio-net-pci` với QEMU user-mode IPv4, DHCP gateway mặc định `10.0.2.2`, DNS proxy `10.0.2.3` và tắt IPv6 để tránh lỗi khi một repository trả về địa chỉ IPv6.
+Nhập `3` trong menu để chạy Proxmox VE 9.2-1 trực tiếp qua QEMU/KVM. Theo mặc định, `a.sh` dùng Proxmox Automated Installation: script tạo answer file, tự cài `proxmox-auto-install-assistant`, chuẩn bị một ISO unattended và khởi động ISO đó bằng QEMU. Cấu hình mặc định là country code `vn` (Vietnam), FQDN `pve.local`, timezone `Asia/Ho_Chi_Minh`, network DHCP và filesystem ext4 trên disk guest `sda`. Script sẽ hỏi mật khẩu root Proxmox bằng prompt ẩn; mật khẩu không được ghi vào repository. First-boot hook tự đặt hostname/FQDN, tắt repository enterprise và bật `pve-no-subscription` cho Trixie.
+
+Theo phương án 2, QEMU chuyển tiếp riêng host port `8006` vào guest port `8006`, còn noVNC chạy ở host port `8888`. Script sẽ cài `qemu-system-x86`, `qemu-utils`, `ovmf`, `cpulimit`, `novnc`, `websockify`, `psmisc`, `unzip`, `python3-pip`, `xorriso` và assistant package; tải ISO chính thức vào `/mnt/proxmox-ve_9.2-1.iso`; kiểm tra SHA256; tạo `/mnt/a.img` nếu chưa có; sau đó khởi động QEMU với 2 vCPU, 8 GB RAM, UEFI OVMF, VNC nội bộ `localhost:5900`, noVNC ở cổng `8888` và Proxmox Web UI qua hostfwd `8006`. NIC dùng `virtio-net-pci` với QEMU user-mode IPv4, DHCP gateway mặc định `10.0.2.2`, DNS proxy `10.0.2.3` và tắt IPv6.
+
+Nếu muốn dùng installer thủ công thay vì unattended:
+
+```bash
+PROXMOX_AUTO_INSTALL=0 ./a.sh
+```
+
+Có thể đổi FQDN, country hoặc timezone trước khi chạy; country phải là mã quốc gia hai chữ cái:
+
+```bash
+PROXMOX_FQDN=pve.local PROXMOX_COUNTRY=vn \
+PROXMOX_TIMEZONE=Asia/Ho_Chi_Minh ./a.sh
+```
 
 Cấu hình Proxmox dùng hostfwd **chỉ cho cổng 8006** theo phương án 2: host `8006` → guest `8006`. noVNC dùng host port `8888`. Script kiểm tra để hai cổng không trùng nhau và không nằm trong dải VNC `5900–5999`; trước khi khởi động, script kill toàn bộ process đang chiếm TCP/UDP port `5900–5999`, nên chỉ dùng lựa chọn này nếu bạn chấp nhận dừng mọi dịch vụ trong dải cổng đó. QEMU vẫn dùng user-mode networking cho kết nối outbound qua NIC virtio. Sau khi Proxmox installer khởi động, chọn cấu hình mạng DHCP cho interface virtio; kiểm tra gateway bằng `ip route` và kiểm tra DNS bằng `getent hosts download.proxmox.com`.
 

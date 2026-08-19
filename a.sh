@@ -9,6 +9,15 @@ WINDOWS_ISO_PATH="/mnt/custom.iso"
 DRIVER_ISO_PATH="/mnt/driver.iso"
 DRIVER_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/virtio-win-0.1.285.iso"
 PROXMOX_ISO_PATH="/mnt/proxmox-ve_9.2-1.iso"
+PROXMOX_AUTO_ISO_PATH="/mnt/proxmox-ve_9.2-1-auto.iso"
+PROXMOX_ANSWER_PATH="/mnt/dockerghcs-proxmox-answer.toml"
+PROXMOX_FIRST_BOOT_PATH="/mnt/dockerghcs-proxmox-first-boot.sh"
+PROXMOX_ISO_BOOT_PATH="${PROXMOX_ISO_PATH}"
+PROXMOX_AUTO_INSTALL="${PROXMOX_AUTO_INSTALL:-1}"
+PROXMOX_ROOT_PASSWORD="${PROXMOX_ROOT_PASSWORD:-}"
+PROXMOX_FQDN="${PROXMOX_FQDN:-pve.local}"
+PROXMOX_COUNTRY="${PROXMOX_COUNTRY:-vn}"
+PROXMOX_TIMEZONE="${PROXMOX_TIMEZONE:-Asia/Ho_Chi_Minh}"
 PROXMOX_ISO_URL="https://enterprise.proxmox.com/iso/proxmox-ve_9.2-1.iso"
 PROXMOX_ISO_SHA256="4e88fe416df9b527624a175f24c9aa07c714d3332afb1ee3dbf3879573ef2c6c"
 PROXMOX_DISK_PATH="/mnt/a.img"
@@ -94,7 +103,7 @@ if [[ "${EUID}" -ne 0 ]]; then
     )
     # Codespaces có thể dùng DOCKER_HOST/DOCKER_CONTEXT để trỏ tới daemon bên ngoài.
     # Giữ các biến này khi chuyển sang root, nếu không script sẽ tưởng Docker bị hỏng.
-    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT QEMU_VNC_TIMEOUT; do
+    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT QEMU_VNC_TIMEOUT PROXMOX_AUTO_INSTALL PROXMOX_FQDN PROXMOX_COUNTRY PROXMOX_TIMEZONE; do
         if [[ -n "${!docker_env_name:-}" ]]; then
             sudo_environment+=("${docker_env_name}=${!docker_env_name}")
         fi
@@ -139,6 +148,21 @@ validate_runtime_settings() {
 }
 
 validate_runtime_settings
+
+read_proxmox_root_password() {
+    [[ "${PROXMOX_AUTO_INSTALL}" == "1" ]] || return 0
+    if [[ -n "${PROXMOX_ROOT_PASSWORD}" ]]; then
+        return 0
+    fi
+    while true; do
+        read -r -s -p "Nhập mật khẩu root Proxmox (tối thiểu 8 ký tự): " PROXMOX_ROOT_PASSWORD
+        echo
+        if [[ "${#PROXMOX_ROOT_PASSWORD}" -ge 8 ]]; then
+            break
+        fi
+        echo "Mật khẩu phải có ít nhất 8 ký tự." >&2
+    done
+}
 
 install_docker() {
     echo ""
@@ -547,6 +571,148 @@ download_proxmox_iso() {
     echo "Proxmox ISO hợp lệ."
 }
 
+install_proxmox_auto_install_assistant() {
+    if command -v proxmox-auto-install-assistant > /dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "=== Cài Proxmox Automated Install Assistant ==="
+    apt-get install -y xorriso openssl
+
+    local package_index package_block package_filename package_sha256 package_deb
+    package_index="$(mktemp)"
+    package_deb="$(mktemp --suffix=.deb)"
+    download_file \
+        "http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/Packages.gz" \
+        "${package_index}"
+    package_block="$(gzip -dc "${package_index}" \
+        | awk '/^Package: proxmox-auto-install-assistant$/{found=1} found{print} found && /^$/{exit}')"
+    rm -f "${package_index}"
+    package_filename="$(printf '%s\n' "${package_block}" \
+        | sed -n 's/^Filename: //p' | head -n 1)"
+    package_sha256="$(printf '%s\n' "${package_block}" \
+        | sed -n 's/^SHA256: //p' | head -n 1)"
+    if [[ -z "${package_filename}" || ! "${package_sha256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        echo "Không tìm thấy metadata hợp lệ của proxmox-auto-install-assistant." >&2
+        rm -f "${package_deb}"
+        exit 1
+    fi
+    download_file "http://download.proxmox.com/debian/pve/${package_filename}" "${package_deb}"
+    if ! printf '%s  %s\n' "${package_sha256}" "${package_deb}" \
+        | sha256sum -c - > /dev/null 2>&1; then
+        echo "SHA256 proxmox-auto-install-assistant không khớp." >&2
+        rm -f "${package_deb}"
+        exit 1
+    fi
+    dpkg -i "${package_deb}" || apt-get -f install -y
+    rm -f "${package_deb}"
+    command -v proxmox-auto-install-assistant > /dev/null 2>&1 || {
+        echo "Cài proxmox-auto-install-assistant thất bại." >&2
+        exit 1
+    }
+}
+
+prepare_proxmox_auto_install_iso() {
+    PROXMOX_ISO_BOOT_PATH="${PROXMOX_ISO_PATH}"
+    if [[ "${PROXMOX_AUTO_INSTALL}" != "1" ]]; then
+        echo "PROXMOX_AUTO_INSTALL=${PROXMOX_AUTO_INSTALL}; dùng cài đặt Proxmox thủ công."
+        return 0
+    fi
+    if [[ -e "${PROXMOX_AUTO_ISO_PATH}" ]]; then
+        echo "Đã tìm thấy auto-install ISO ${PROXMOX_AUTO_ISO_PATH}; giữ nguyên."
+        validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"
+        PROXMOX_ISO_BOOT_PATH="${PROXMOX_AUTO_ISO_PATH}"
+        return 0
+    fi
+
+    read_proxmox_root_password
+    install_proxmox_auto_install_assistant
+
+    local root_password_hash escaped_fqdn escaped_country escaped_timezone
+    root_password_hash="$(printf '%s\n' "${PROXMOX_ROOT_PASSWORD}" \
+        | openssl passwd -6 -stdin)"
+    escaped_fqdn="${PROXMOX_FQDN//\\/\\\\}"
+    escaped_fqdn="${escaped_fqdn//\"/\\\"}"
+    escaped_country="${PROXMOX_COUNTRY//\"/\\\"}"
+    escaped_timezone="${PROXMOX_TIMEZONE//\"/\\\"}"
+
+    cat > "${PROXMOX_ANSWER_PATH}" <<EOF
+[global]
+keyboard = "us"
+country = "${escaped_country}"
+fqdn = "${escaped_fqdn}"
+timezone = "${escaped_timezone}"
+root-password-hashed = "${root_password_hash}"
+mailto = "root@${escaped_fqdn}"
+reboot-mode = "reboot"
+
+[network]
+source = "from-dhcp"
+
+[disk-setup]
+filesystem = "ext4"
+disk-list = ["sda"]
+
+[first-boot]
+source = "from-iso"
+ordering = "fully-up"
+EOF
+    chmod 600 "${PROXMOX_ANSWER_PATH}"
+
+    cat > "${PROXMOX_FIRST_BOOT_PATH}" <<'EOF'
+#!/bin/sh
+set -eu
+
+FQDN="__PROXMOX_FQDN__"
+TIMEZONE="__PROXMOX_TIMEZONE__"
+
+hostnamectl set-hostname "${FQDN}" 2>/dev/null || true
+printf '%s\n' "${FQDN}" > /etc/hostname
+if ! grep -Eq "(^|[[:space:]])${FQDN}([[:space:]]|$)" /etc/hosts; then
+    printf '127.0.1.1 %s %s\n' "${FQDN}" "${FQDN%%.*}" >> /etc/hosts
+fi
+timedatectl set-timezone "${TIMEZONE}" 2>/dev/null || true
+localectl set-keymap us 2>/dev/null || true
+
+for source in /etc/apt/sources.list.d/pve-enterprise.sources \
+              /etc/apt/sources.list.d/pve-enterprise.list; do
+    if [ -f "${source}" ]; then
+        mv "${source}" "${source}.disabled"
+    fi
+done
+if [ -f /etc/apt/sources.list.d/ceph.sources ]; then
+    mv /etc/apt/sources.list.d/ceph.sources \
+       /etc/apt/sources.list.d/ceph.sources.disabled
+fi
+
+cat > /etc/apt/sources.list.d/proxmox.sources <<'REPO'
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+REPO
+
+apt-get update
+EOF
+    sed -i \
+        -e "s|__PROXMOX_FQDN__|${escaped_fqdn}|g" \
+        -e "s|__PROXMOX_TIMEZONE__|${escaped_timezone}|g" \
+        "${PROXMOX_FIRST_BOOT_PATH}"
+    chmod 700 "${PROXMOX_FIRST_BOOT_PATH}"
+
+    echo "=== Tạo Proxmox unattended ISO ==="
+    proxmox-auto-install-assistant prepare-iso \
+        "${PROXMOX_ISO_PATH}" \
+        --fetch-from iso \
+        --answer-file "${PROXMOX_ANSWER_PATH}" \
+        --on-first-boot "${PROXMOX_FIRST_BOOT_PATH}" \
+        --output "${PROXMOX_AUTO_ISO_PATH}"
+    validate_iso_file "${PROXMOX_AUTO_ISO_PATH}"
+    PROXMOX_ISO_BOOT_PATH="${PROXMOX_AUTO_ISO_PATH}"
+    echo "Auto-install ISO đã sẵn sàng: ${PROXMOX_ISO_BOOT_PATH}"
+}
+
 ensure_proxmox_disk() {
     local requested_bytes current_bytes
     echo ""
@@ -699,6 +865,7 @@ start_proxmox() {
     check_kvm_for_proxmox
     mount_storage
     download_proxmox_iso
+    prepare_proxmox_auto_install_iso
     ensure_proxmox_disk
     find_ovmf
 
@@ -764,13 +931,13 @@ start_proxmox() {
         -vga virtio \
         -netdev "user,id=n0,ipv4=on,ipv6=off,dns=10.0.2.3,hostfwd=tcp::${PROXMOX_GUEST_PORT}-:8006" \
         -device virtio-net-pci,netdev=n0 \
-        -boot order=d,menu=on \
+        -boot menu=on,once=d \
         -device virtio-serial-pci \
         -device virtio-rng-pci \
         -audiodev driver=none,id=noaudio \
         -drive "file=${PROXMOX_DISK_PATH},format=raw" \
         "${pflash_args[@]}" \
-        -cdrom "${PROXMOX_ISO_PATH}" \
+        -cdrom "${PROXMOX_ISO_BOOT_PATH}" \
         -uuid e47ddb84-fb4d-46f9-b531-14bb15156336 \
         -vnc 127.0.0.1:0 \
         > "${PROXMOX_QEMU_LOG}" 2>&1 &
