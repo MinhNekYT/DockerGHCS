@@ -6,8 +6,6 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WINDOWS_ISO_PATH="/mnt/custom.iso"
-DRIVER_ISO_PATH="/mnt/driver.iso"
-DRIVER_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/virtio-win-0.1.285.iso"
 PROXMOX_ISO_PATH="/mnt/proxmox-ve_9.2-1.iso"
 PROXMOX_AUTO_ISO_PATH="/mnt/proxmox-ve_9.2-1-auto.iso"
 PROXMOX_ANSWER_PATH="/mnt/dockerghcs-proxmox-answer.toml"
@@ -25,7 +23,6 @@ PROXMOX_ISO_SHA256="4e88fe416df9b527624a175f24c9aa07c714d3332afb1ee3dbf3879573ef
 PROXMOX_DISK_PATH="/mnt/a.img"
 PROXMOX_DISK_SIZE="${PROXMOX_DISK_SIZE:-400G}"
 MIN_FREE_KB=$((10 * 1024 * 1024))
-DOCKER_APT_LOG="/tmp/windowsghcs-docker-apt.log"
 PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
 PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
 PROXMOX_PULSE_LOG="/tmp/dockerghcs-proxmox-pulseaudio.log"
@@ -35,8 +32,8 @@ PROXMOX_PULSE_STARTED=0
 NOVNC_PORT="${NOVNC_PORT:-8888}"
 PROXMOX_GUEST_PORT="${PROXMOX_GUEST_PORT:-8006}"
 QEMU_VNC_TIMEOUT="${QEMU_VNC_TIMEOUT:-60}"
-WINDOWS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/windows.yaml"
-MACOS_YAML_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/macos.yaml"
+AUTOMATED_BASE_URL="https://raw.githubusercontent.com/MinhNekYT/DockerGHCS/refs/heads/main/automated"
+VM_DISK_SIZE="${VM_DISK_SIZE:-400G}"
 
 on_error() {
     local exit_code=$?
@@ -46,14 +43,6 @@ on_error() {
     if command -v dpkg > /dev/null 2>&1; then
         echo "Trạng thái package chưa hoàn tất:"
         dpkg --audit 2>/dev/null || true
-    fi
-    if [[ -s "${DOCKER_APT_LOG}" ]]; then
-        echo "Nhật ký cài Docker gần nhất:"
-        tail -n 30 "${DOCKER_APT_LOG}"
-    fi
-    if [[ -s /tmp/windowsghcs-dockerd.log ]]; then
-        echo "Nhật ký Docker daemon gần nhất:"
-        tail -n 30 /tmp/windowsghcs-dockerd.log
     fi
     if [[ -s "${PROXMOX_QEMU_LOG}" ]]; then
         echo "Nhật ký QEMU gần nhất:"
@@ -73,7 +62,7 @@ confirm_once() {
     echo ""
     echo "LƯU Ý: Một khi chạy script này thì sẽ không thể cài bản Windows khác bằng script này,"
     echo "chỉ có thể tạo codespaces khác để cài bản Windows khác."
-    echo "Script có thể thay đổi package Docker, mount /mnt và tải các file ISO dung lượng lớn."
+    echo "Script có thể thay đổi package QEMU/KVM, modprobe KVM, mount /mnt và tải các file ISO dung lượng lớn."
     echo ""
 
     while true; do
@@ -107,11 +96,10 @@ if [[ "${EUID}" -ne 0 ]]; then
         "WINDOWS_CONFIRMATION_DONE=1"
         "WINDOWS_INSTALL_USER=${calling_user}"
     )
-    # Codespaces có thể dùng DOCKER_HOST/DOCKER_CONTEXT để trỏ tới daemon bên ngoài.
-    # Giữ các biến này khi chuyển sang root, nếu không script sẽ tưởng Docker bị hỏng.
-    for docker_env_name in DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH PROXMOX_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT QEMU_VNC_TIMEOUT PROXMOX_AUTO_INSTALL PROXMOX_FQDN PROXMOX_COUNTRY PROXMOX_TIMEZONE; do
-        if [[ -n "${!docker_env_name:-}" ]]; then
-            sudo_environment+=("${docker_env_name}=${!docker_env_name}")
+    # Giữ các biến runtime khi chuyển sang root để disk size, port và lựa chọn không bị mất.
+    for runtime_env_name in PROXMOX_DISK_SIZE VM_DISK_SIZE NOVNC_PORT PROXMOX_GUEST_PORT QEMU_VNC_TIMEOUT PROXMOX_AUTO_INSTALL PROXMOX_FQDN PROXMOX_COUNTRY PROXMOX_TIMEZONE DOCKERGHCS_AUTOMATED_CHOICE DOCKERGHCS_SKIP_DISK_PROMPT; do
+        if [[ -n "${!runtime_env_name:-}" ]]; then
+            sudo_environment+=("${runtime_env_name}=${!runtime_env_name}")
         fi
     done
     exec sudo env "${sudo_environment[@]}" bash "$0"
@@ -168,156 +156,6 @@ read_proxmox_root_password() {
         fi
         echo "Mật khẩu phải có ít nhất 8 ký tự." >&2
     done
-}
-
-install_docker() {
-    echo ""
-    echo "=== Kiểm tra Docker hiện có ==="
-    # Codespaces thường đã có Docker/Moby. Nếu Compose hoạt động thì không
-    # thay thế package, tránh lỗi dpkg khi cài docker-ce lần nữa.
-    if command -v docker > /dev/null 2>&1 \
-        && docker compose version > /dev/null 2>&1; then
-        echo "Docker CLI và Compose đã có; không gỡ package hiện tại."
-    else
-        echo ""
-        echo "=== Khôi phục trạng thái apt/dpkg nếu lần chạy trước bị gián đoạn ==="
-        dpkg --configure -a || true
-        apt-get -f install -y || true
-
-        echo ""
-        echo "=== Gỡ package Docker/Moby xung đột ==="
-        official_packages=(
-            docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-            docker-compose-plugin docker-ce-rootless-extras
-        )
-        distro_packages=(
-            docker.io docker-doc docker-compose docker-compose-v2 docker-buildx
-            podman-docker containerd runc moby-engine moby-cli moby-buildx
-            moby-compose moby-containerd moby-runc
-        )
-
-        # Purge các package Docker CE bị cài dở sau lỗi mã 100.
-        apt-get purge -y "${official_packages[@]}" || true
-        installed_distro_packages=()
-        for pkg in "${distro_packages[@]}"; do
-            if dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null \
-                | grep -q 'install ok installed'; then
-                installed_distro_packages+=("${pkg}")
-            fi
-        done
-        if ((${#installed_distro_packages[@]} > 0)); then
-            apt-get remove -y "${installed_distro_packages[@]}" || true
-        fi
-        dpkg --configure -a || true
-        apt-get -f install -y || true
-
-        apt-get update
-        apt-get install -y ca-certificates curl gnupg lsb-release
-
-        echo ""
-        echo "=== Cấu hình Docker official stable repository ==="
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-            -o /etc/apt/keyrings/docker.asc
-        chmod a+r /etc/apt/keyrings/docker.asc
-        rm -f /etc/apt/sources.list.d/docker.sources \
-              /etc/apt/sources.list.d/docker.list
-
-        docker_arch="$(dpkg --print-architecture)"
-        ubuntu_codename="$(lsb_release -cs)"
-        tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/ubuntu
-Suites: ${ubuntu_codename}
-Components: stable
-Architectures: ${docker_arch}
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-        apt-get update
-
-        echo ""
-        echo "=== Cài Docker CE, CLI, Containerd, Buildx và Compose ==="
-        : > "${DOCKER_APT_LOG}"
-        if ! apt-get install -y --no-install-recommends \
-            docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-            2>&1 | tee "${DOCKER_APT_LOG}"; then
-            echo "Docker CE cài thất bại; đang phục hồi package và chuyển sang fallback Ubuntu."
-            apt-get purge -y "${official_packages[@]}" || true
-            dpkg --configure -a || true
-            apt-get -f install -y || true
-            apt-get update
-            apt-get install -y docker.io docker-compose-v2
-        fi
-    fi
-
-    if ! command -v docker > /dev/null 2>&1; then
-        echo "Không tìm thấy Docker CLI sau khi cài đặt."
-        exit 1
-    fi
-    if ! docker compose version > /dev/null 2>&1; then
-        echo "Không tìm thấy Docker Compose sau khi cài đặt."
-        exit 1
-    fi
-
-    if ! getent group docker > /dev/null; then
-        groupadd docker
-    fi
-    if [[ -n "${INSTALL_USER}" && "${INSTALL_USER}" != "root" ]] \
-        && id "${INSTALL_USER}" > /dev/null 2>&1; then
-        usermod -aG docker "${INSTALL_USER}"
-        echo "Đã thêm ${INSTALL_USER} vào group docker. Quyền mới có hiệu lực sau khi đăng nhập lại."
-    fi
-
-    echo ""
-    echo "=== Kiểm tra Docker daemon ==="
-    if docker info > /dev/null 2>&1; then
-        echo "Docker daemon đang hoạt động."
-    else
-        if [[ -d /run/systemd/system ]] && command -v systemctl > /dev/null 2>&1; then
-            systemctl enable --now docker 2>/dev/null || true
-        fi
-        if ! docker info > /dev/null 2>&1 && command -v service > /dev/null 2>&1; then
-            service docker start 2>/dev/null || true
-        fi
-        if ! docker info > /dev/null 2>&1 && command -v dockerd > /dev/null 2>&1; then
-            echo "Đang thử khởi động Docker daemon trực tiếp..."
-            nohup dockerd > /tmp/windowsghcs-dockerd.log 2>&1 &
-            dockerd_pid=$!
-            for _ in {1..30}; do
-                if docker info > /dev/null 2>&1; then
-                    break
-                fi
-                if ! kill -0 "${dockerd_pid}" 2>/dev/null; then
-                    break
-                fi
-                sleep 1
-            done
-        fi
-    fi
-
-    docker --version
-    docker compose version
-    if ! docker info > /dev/null 2>&1; then
-        echo "Docker CLI/Compose đã cài nhưng Docker daemon chưa chạy hoặc Codespace không cấp quyền daemon."
-        exit 1
-    fi
-    echo "Đã cài và kiểm tra Docker thành công."
-}
-
-check_kvm() {
-    echo ""
-    echo "=== Kiểm tra KVM ==="
-    if [[ ! -e /dev/kvm ]]; then
-        echo "Không tìm thấy /dev/kvm. Host/Codespace chưa cấp KVM hoặc nested virtualization."
-        echo "Windows container sẽ không chạy được; hãy dùng máy/runner có KVM rồi chạy lại."
-        exit 1
-    fi
-    if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
-        echo "Không có quyền đọc/ghi /dev/kvm dù thiết bị đã tồn tại."
-        echo "Hãy chạy trong môi trường có quyền KVM hoặc điều chỉnh quyền thiết bị."
-        exit 1
-    fi
-    echo "KVM khả dụng."
 }
 
 check_kvm_for_proxmox() {
@@ -411,58 +249,6 @@ validate_iso_file() {
         echo "File ISO có kích thước bất thường hoặc tải chưa hoàn tất: ${path}"
         return 1
     fi
-}
-
-download_isos() {
-    local windows_iso_url="$1"
-    local windows_created=0
-
-    if [[ -e "${WINDOWS_ISO_PATH}" ]]; then
-        echo "Đã tồn tại ${WINDOWS_ISO_PATH}; giữ nguyên và không ghi đè."
-        if ! validate_iso_file "${WINDOWS_ISO_PATH}"; then
-            echo "custom.iso hiện có không hợp lệ hoặc tải dở. Hãy xóa file này rồi chạy lại với link ISO mới."
-            exit 1
-        fi
-    else
-        if [[ -z "${windows_iso_url}" ]]; then
-            echo "Chưa có custom.iso và chưa cung cấp link Windows ISO."
-            exit 1
-        fi
-        echo ""
-        echo "=== Tải Windows ISO ==="
-        echo "Đang tải Windows ISO vào ${WINDOWS_ISO_PATH}..."
-        if ! download_file "${windows_iso_url}" "${WINDOWS_ISO_PATH}"; then
-            echo "Không thể tải Windows ISO."
-            exit 1
-        fi
-        windows_created=1
-        if ! validate_iso_file "${WINDOWS_ISO_PATH}"; then
-            rm -f "${WINDOWS_ISO_PATH}"
-            exit 1
-        fi
-    fi
-
-    if [[ -e "${DRIVER_ISO_PATH}" ]]; then
-        echo "driver.iso đã tồn tại, đang kiểm tra file hiện có."
-        if ! validate_iso_file "${DRIVER_ISO_PATH}"; then
-            echo "driver.iso hiện có không hợp lệ. Hãy xóa file này hoặc tạo Codespace mới rồi chạy lại."
-            exit 1
-        fi
-        echo "driver.iso hợp lệ, giữ nguyên file hiện có."
-    else
-        echo "Đang tải VirtIO driver ISO vào ${DRIVER_ISO_PATH}..."
-        if ! download_file "${DRIVER_ISO_URL}" "${DRIVER_ISO_PATH}"; then
-            [[ "${windows_created}" == "1" ]] && rm -f "${WINDOWS_ISO_PATH}"
-            echo "Không thể tải VirtIO driver ISO; đã xóa Windows ISO mới tải để có thể chạy lại an toàn."
-            exit 1
-        fi
-        if ! validate_iso_file "${DRIVER_ISO_PATH}"; then
-            rm -f "${DRIVER_ISO_PATH}"
-            [[ "${windows_created}" == "1" ]] && rm -f "${WINDOWS_ISO_PATH}"
-            exit 1
-        fi
-    fi
-    echo "Đã tải và kiểm tra xong hai file ISO."
 }
 
 proxmox_tools_ready() {
@@ -1072,61 +858,22 @@ start_proxmox() {
     wait "${QEMU_PID}"
 }
 
-download_compose_file() {
-    local url="$1"
-    local destination="$2"
-    local temporary_file
-
-    temporary_file="$(mktemp "${destination}.part.XXXXXX")"
-    echo "Không tìm thấy ${destination}; đang tải từ raw GitHub..."
-    if command -v curl > /dev/null 2>&1; then
-        if ! curl -fL --retry 3 --retry-delay 2 --progress-bar "${url}" -o "${temporary_file}"; then
-            rm -f "${temporary_file}"
-            echo "Không thể tải ${url}"
-            exit 1
-        fi
-    elif command -v wget > /dev/null 2>&1; then
-        if ! wget --progress=dot:giga -O "${temporary_file}" "${url}"; then
-            rm -f "${temporary_file}"
-            echo "Không thể tải ${url}"
-            exit 1
-        fi
-    else
-        rm -f "${temporary_file}"
-        echo "Cần curl hoặc wget để tải file cấu hình Docker Compose."
-        exit 1
-    fi
-
-    if [[ ! -s "${temporary_file}" ]] || ! grep -q '^services:' "${temporary_file}"; then
-        rm -f "${temporary_file}"
-        echo "File YAML tải về không hợp lệ: ${url}"
-        exit 1
-    fi
-    mv -f "${temporary_file}" "${destination}"
-    echo "Đã tải ${destination}."
-}
-
-ensure_compose_file() {
-    [[ "${OS_NAME}" == "Proxmox" ]] && return 0
-    if [[ -f "${COMPOSE_FILE}" ]]; then
-        return 0
-    fi
-
-    case "${OS_NAME}" in
-        Windows)
-            download_compose_file "${WINDOWS_YAML_URL}" "${COMPOSE_FILE}"
+select_os() {
+    case "${DOCKERGHCS_AUTOMATED_CHOICE:-}" in
+        1)
+            OS_NAME="Windows"
+            return 0
             ;;
-        macOS)
-            download_compose_file "${MACOS_YAML_URL}" "${COMPOSE_FILE}"
+        2)
+            OS_NAME="macOS"
+            return 0
             ;;
-        *)
-            echo "Không xác định được hệ điều hành đã chọn: ${OS_NAME}"
-            exit 1
+        3)
+            OS_NAME="Proxmox"
+            return 0
             ;;
     esac
-}
 
-select_os() {
     echo ""
     echo "=== Chọn hệ điều hành cần cài ==="
     echo "1) Windows"
@@ -1137,18 +884,15 @@ select_os() {
         case "${os_choice}" in
             1)
                 OS_NAME="Windows"
-                COMPOSE_FILE="${SCRIPT_DIR}/windows.yaml"
                 break
                 ;;
             2)
                 OS_NAME="macOS"
-                COMPOSE_FILE="${SCRIPT_DIR}/macos.yaml"
                 break
                 ;;
             3)
                 OS_NAME="Proxmox"
-                COMPOSE_FILE=""
-                break
+                    break
                 ;;
             *)
                 echo "Lựa chọn không hợp lệ. Vui lòng nhập 1, 2 hoặc 3."
@@ -1158,51 +902,80 @@ select_os() {
 
 }
 
-select_os
-ensure_compose_file
-
-if [[ "${OS_NAME}" == "Proxmox" ]]; then
-    start_proxmox
-    exit 0
-fi
-
-install_docker
-check_kvm
-mount_storage
-
-if [[ "${OS_NAME}" == "Windows" ]]; then
-    if [[ -e "${WINDOWS_ISO_PATH}" ]]; then
-        echo "Đã có ${WINDOWS_ISO_PATH}; bỏ qua hỏi link và tải lại Windows ISO."
-        download_isos ""
-    else
-        echo ""
-        read -r -p "Bạn muốn cài bản Windows nào? Hãy dán link ISO Windows mà bạn muốn: " windows_iso_url
-        windows_iso_url="${windows_iso_url//$'\r'/}"
-        if [[ -z "${windows_iso_url}" ]]; then
-            echo "Link ISO không được để trống."
-            exit 1
-        fi
-        if [[ "${windows_iso_url}" != http://* && "${windows_iso_url}" != https://* ]]; then
-            echo "Link ISO phải bắt đầu bằng http:// hoặc https://."
-            exit 1
-        fi
-        download_isos "${windows_iso_url}"
+read_vm_disk_size() {
+    if [[ "${DOCKERGHCS_SKIP_DISK_PROMPT:-0}" == "1" ]]; then
+        echo "Giữ dung lượng disk đã chọn: ${VM_DISK_SIZE}"
+        PROXMOX_DISK_SIZE="${VM_DISK_SIZE}"
+        export PROXMOX_DISK_SIZE
+        return 0
     fi
-else
-    echo ""
-    echo "Đã chọn macOS. macos.yaml không dùng USERNAME/PASSWORD và không cần Windows ISO."
-    echo "Lần khởi động đầu tiên sẽ tải bộ cài macOS từ dockur/macos."
-fi
+    local default_gb="${VM_DISK_SIZE%G}"
+    [[ "${default_gb}" =~ ^[1-9][0-9]*$ ]] || default_gb=400
+    local requested_gb
+    read -r -p "Nhập dung lượng đĩa ảo bằng GB [${default_gb}]: " requested_gb
+    requested_gb="${requested_gb:-${default_gb}}"
+    if [[ ! "${requested_gb}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Dung lượng đĩa phải là số GB nguyên dương." >&2
+        exit 1
+    fi
+    VM_DISK_SIZE="${requested_gb}G"
+    PROXMOX_DISK_SIZE="${VM_DISK_SIZE}"
+    export VM_DISK_SIZE PROXMOX_DISK_SIZE
+    echo "Đĩa ảo được chọn: ${VM_DISK_SIZE}"
+}
 
-cd "${SCRIPT_DIR}"
-echo ""
-echo "=== Kiểm tra Docker Compose cho ${OS_NAME} ==="
-docker compose -f "${COMPOSE_FILE}" config -q
-echo "=== Dừng container/tiến trình cũ của ${OS_NAME} ==="
-docker compose -f "${COMPOSE_FILE}" down --remove-orphans || true
-echo "=== Khởi động Docker Compose cho ${OS_NAME} ==="
-echo "Chạy lệnh 1: docker compose -f ${COMPOSE_FILE} up -d"
-docker compose -f "${COMPOSE_FILE}" up -d
-echo ""
-echo "Chạy lệnh 2: docker compose -f ${COMPOSE_FILE} up"
-docker compose -f "${COMPOSE_FILE}" up
+ensure_automated_scripts() {
+    local files=(common.sh windows-qemu.sh macos-qemu.sh proxmox-qemu.sh)
+    mkdir -p "${SCRIPT_DIR}/automated"
+    local file_path file_url
+    for file_name in "${files[@]}"; do
+        file_path="${SCRIPT_DIR}/automated/${file_name}"
+        if [[ ! -s "${file_path}" ]]; then
+            file_url="${AUTOMATED_BASE_URL}/${file_name}"
+            echo "Không tìm thấy ${file_path}; đang tải từ GitHub..."
+            download_file "${file_url}" "${file_path}"
+        fi
+        chmod 0755 "${file_path}"
+    done
+}
+
+select_os
+read_vm_disk_size
+ensure_automated_scripts
+
+case "${OS_NAME}" in
+    Windows)
+        if [[ -e "${WINDOWS_ISO_PATH}" ]]; then
+            echo "Đã có ${WINDOWS_ISO_PATH}; bỏ qua hỏi link và tải lại Windows ISO."
+            WINDOWS_ISO_URL="" VM_STORAGE_DIR=/mnt \
+                DOCKERGHCS_TARGET_USER="${INSTALL_USER:-${SUDO_USER:-}}" \
+                bash "${SCRIPT_DIR}/automated/windows-qemu.sh"
+        else
+            echo ""
+            read -r -p "Bạn muốn cài bản Windows nào? Hãy dán link ISO Windows mà bạn muốn: " windows_iso_url
+            windows_iso_url="${windows_iso_url//$'\r'/}"
+            if [[ -z "${windows_iso_url}" ]]; then
+                echo "Link ISO không được để trống."
+                exit 1
+            fi
+            if [[ "${windows_iso_url}" != http://* && "${windows_iso_url}" != https://* ]]; then
+                echo "Link ISO phải bắt đầu bằng http:// hoặc https://."
+                exit 1
+            fi
+            WINDOWS_ISO_URL="${windows_iso_url}" VM_STORAGE_DIR=/mnt \
+                DOCKERGHCS_TARGET_USER="${INSTALL_USER:-${SUDO_USER:-}}" \
+                bash "${SCRIPT_DIR}/automated/windows-qemu.sh"
+        fi
+        ;;
+    macOS)
+        echo "Đã chọn macOS Sequoia 15 qua QEMU + osx-kvm + OpenCore ISO."
+        VM_STORAGE_DIR=/mnt \
+            DOCKERGHCS_TARGET_USER="${INSTALL_USER:-${SUDO_USER:-}}" \
+            bash "${SCRIPT_DIR}/automated/macos-qemu.sh"
+        ;;
+    Proxmox)
+        VM_STORAGE_DIR=/mnt \
+            DOCKERGHCS_TARGET_USER="${INSTALL_USER:-${SUDO_USER:-}}" \
+            bash "${SCRIPT_DIR}/automated/proxmox-qemu.sh"
+        ;;
+esac

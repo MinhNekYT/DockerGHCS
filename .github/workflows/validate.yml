@@ -25,18 +25,27 @@ jobs:
         run: |
           bash -n a.sh
           bash -n xfce4.sh
+          for script in automated/*.sh; do bash -n "$script"; done
           shellcheck -x a.sh
           shellcheck -x xfce4.sh
+          shellcheck -x automated/*.sh
 
-      - name: Validate Compose files
+      - name: Validate QEMU migration references
         run: |
-          docker compose -f windows.yaml config -q
-          docker compose -f macos.yaml config -q
+          test -x automated/common.sh
+          test -x automated/windows-qemu.sh
+          test -x automated/macos-qemu.sh
+          test -x automated/proxmox-qemu.sh
+          grep -q 'kholia/OSX-KVM' automated/macos-qemu.sh
+          grep -q 'LongQT-OpenCore-v0.7.iso' automated/macos-qemu.sh
+          grep -q 'VM_DISK_SIZE' a.sh
+          grep -q 'qemu-img create -f raw' automated/windows-qemu.sh
+          grep -q 'qemu-img create -f qcow2' automated/macos-qemu.sh
 
       - name: Check forbidden stale references
         run: |
           if grep -RInE --exclude-dir=.git --exclude=validate.yml \
-            'cloudflare|cloudflared|YourStrongPassword|disk_list|pve\.lan|6080|frierencloud' .; then
+            'cloudflare|cloudflared|YourStrongPassword|disk_list|pve\.lan|frierencloud' .; then
             echo "Found forbidden stale reference." >&2
             exit 1
           fi

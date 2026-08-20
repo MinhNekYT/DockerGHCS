@@ -1,12 +1,12 @@
 # DockerGHCS
 
-DockerGHCS hỗ trợ ba lựa chọn: **Windows** và **macOS** chạy trong Docker thông qua [dockur/windows](https://github.com/dockur/windows) và [dockurr/macos](https://github.com/dockur/macos), cùng **Proxmox VE** chạy trực tiếp qua QEMU/KVM. Script `a.sh` tự kiểm tra package, storage, Docker hoặc QEMU/KVM rồi khởi động đúng lựa chọn trong menu.
+DockerGHCS hỗ trợ ba lựa chọn: **Windows**, **macOS** và **Proxmox VE**, đều chạy trực tiếp bằng **QEMU/KVM**. Windows dùng raw disk; macOS dùng quy trình [kholia/OSX-KVM](https://github.com/kholia/OSX-KVM), recovery image của Apple và OpenCore ISO; Proxmox dùng installer unattended hiện có. Script `a.sh` tự kiểm tra package, storage, QEMU/KVM, OVMF, PulseAudio và noVNC rồi khởi động lựa chọn trong menu.
 
-> **Lưu ý quan trọng:** Windows và macOS cần Docker daemon cùng `/dev/kvm`; Proxmox cần QEMU/KVM hoặc TCG fallback, firmware OVMF và đủ storage. GitHub Codespaces không phải lúc nào cũng cấp Docker daemon hoặc KVM, vì vậy khả năng chạy thực tế phụ thuộc vào Codespace/Ubuntu host.
+> **Lưu ý quan trọng:** Windows cần QEMU/KVM hoặc TCG fallback; macOS cần QEMU/KVM thật, CPU phù hợp và không dùng TCG fallback; Proxmox có thể dùng KVM hoặc TCG. Cả ba cần firmware OVMF, đủ storage và host có quyền chạy QEMU. GitHub Codespaces không phải lúc nào cũng cấp `/dev/kvm`, vì vậy macOS có thể không chạy trong Codespace không hỗ trợ nested virtualization.
 
 ## Cách sử dụng
 
-Tạo Codespace hoặc Ubuntu host có tối thiểu 4 CPU, 16 GB RAM và dung lượng trống phù hợp. Vì cấu hình hiện tại dùng đĩa ảo `400G`, storage cần đủ lớn khi Windows phát sinh dữ liệu; đĩa ảo có thể bắt đầu dưới dạng sparse nhưng không được để filesystem đầy.
+Tạo Codespace hoặc Ubuntu host có tối thiểu 4 CPU, 16 GB RAM và dung lượng trống phù hợp. Khi chạy `a.sh`, script hỏi dung lượng đĩa ảo bằng GB và mặc định là `400G`; nhấn Enter để dùng mặc định. Windows và Proxmox tạo raw disk; macOS tạo qcow2 disk `mac_hdd_ng.img`. Các disk có thể sparse nhưng filesystem không được đầy.
 
 Trong thư mục repository, chạy:
 
@@ -16,7 +16,7 @@ chmod +x a.sh
 ./a.sh
 ```
 
-Script sẽ hỏi xác nhận `y/n`, không phân biệt chữ hoa chữ thường. Sau đó script hỏi link ISO Windows, tải ISO thành `/mnt/custom.iso` và tải VirtIO driver thành `/mnt/driver.iso`. Nếu `/mnt/custom.iso` đã tồn tại, script dừng để tránh ghi đè bản Windows trước đó.
+Script sẽ hỏi xác nhận `y/n`, không phân biệt chữ hoa chữ thường, sau đó hỏi lựa chọn hệ điều hành và dung lượng disk. Với Windows, script hỏi link ISO, tải vào `/mnt/custom.iso`, tải VirtIO driver vào `/mnt/driver.iso` và boot bằng QEMU. Nếu `/mnt/custom.iso` đã tồn tại, script dùng lại file hợp lệ thay vì ghi đè.
 
 ## Cài từ repository khác
 
@@ -28,38 +28,36 @@ chmod +x a.sh
 bash a.sh
 ```
 
-Khi chạy, `a.sh` kiểm tra file cấu hình trong cùng thư mục với script. Nếu thiếu `windows.yaml` hoặc `macos.yaml`, script tự tải file tương ứng từ DockerGHCS bằng các URL raw chính thức. Vì vậy repository khác không cần chép sẵn các file YAML. Riêng `xfce4.sh` có thể chạy độc lập trong Ubuntu/Codespace và tự bỏ qua package đã cài.
+Khi chạy từ repository khác, `a.sh` tự tải các script còn thiếu trong thư mục `automated/` từ DockerGHCS. Vì vậy repository khác chỉ cần tải `a.sh`; không cần chép file YAML. Riêng `xfce4.sh` vẫn có thể chạy độc lập trong Ubuntu/Codespace và tự bỏ qua package đã cài.
 
-Nếu package, Docker daemon, QEMU/KVM, OVMF và noVNC đã có sẵn, script sẽ bỏ qua bước cài lại. Khi chạy lại, script giữ nguyên ISO và `/mnt/a.img`, dừng container Docker cũ trước khi chạy Compose, hoặc dừng QEMU/noVNC cũ trước khi chạy Proxmox. Trước khi chạy Proxmox, script sẽ kill mọi process đang giữ **TCP hoặc UDP port từ 5900 đến 5999**. `custom.iso` không bị ghi đè; nếu file hợp lệ đã tồn tại, script dùng lại file đó và không hỏi link ISO lần nữa.
+Nếu QEMU/KVM, OVMF, PulseAudio và noVNC đã có sẵn, script sẽ bỏ qua package đã cài. Khi chạy lại, script giữ nguyên ISO và disk hiện có, dừng QEMU/noVNC cũ của disk tương ứng rồi chạy lại. Proxmox vẫn dọn mọi process đang giữ **TCP hoặc UDP port từ 5900 đến 5999**. `custom.iso`, `driver.iso`, BaseSystem image, OpenCore ISO và các disk hợp lệ được tái sử dụng; script không ghi đè chúng.
 
 ## Cấu hình hiện tại
 
 | Lựa chọn | Cách chạy | Cổng chính |
 |---|---|---|
-| Windows | Docker Compose với `ghcr.io/dockur/windows` | Web viewer `8006`, RDP `3389` TCP/UDP |
-| macOS | Docker Compose với `dockurr/macos` | Web viewer `8006`, VNC `5900` |
+| Windows | QEMU/KVM trực tiếp, raw disk, UEFI OVMF | noVNC `8006`, RDP hostfwd `3389` |
+| macOS | QEMU/KVM + osx-kvm + LongQT OpenCore ISO, qcow2 disk | noVNC `8006`, SSH hostfwd `2222` |
 | Proxmox | QEMU/KVM trực tiếp với OVMF và noVNC | noVNC `8888`, hostfwd `8006 → 8006` |
 
-Windows dùng `RAM_SIZE: "half"`, `CPU_CORES: "max"`, `DISK_SIZE: "400G"`, user `windowsghcs`, password `123456`, `/dev/kvm` và `/dev/net/tun`. `a.sh` truyền VirtIO driver vào QEMU bằng `ARGUMENTS` và mount storage/ISO theo đúng đường dẫn mà Compose sử dụng. macOS dùng `VERSION: "15"`, không có `USERNAME` hoặc `PASSWORD`, và không hỏi Windows ISO.
+Windows QEMU dùng `windows.img` raw, UEFI OVMF, virtio-blk, virtio-net, HDA audio và VirtIO driver ISO. macOS QEMU dùng `mac_hdd_ng.img` qcow2, recovery `BaseSystem.img`, LongQT OpenCore ISO, CPU model tương thích Sequoia 15, HDA audio và user-mode networking. Các cấu hình legacy đã được loại bỏ; `a.sh` chỉ sử dụng runtime QEMU trong `automated/`.
 
-## Nếu gặp lỗi Docker
+## Nếu gặp lỗi QEMU/KVM
 
-Nếu lần chạy trước dừng ở `docker-ce` với mã lỗi `100`, hãy lấy code mới nhất trước khi chạy lại:
+Nếu Windows hoặc Proxmox không khởi động, kiểm tra QEMU, KVM, firmware và log trước khi chạy lại:
 
 ```bash
 git pull origin main
-./a.sh
-```
-
-Script mới sẽ kiểm tra Docker/Compose đang có sẵn, phục hồi trạng thái `dpkg`, xử lý package xung đột, thử Docker CE trước và dùng package Ubuntu làm fallback khi môi trường Codespaces không tương thích. Khi Docker đã hoạt động, script bỏ qua cài lại package. Script không dùng `newgrp`, vì lệnh đó có thể mở shell tương tác và làm quy trình bị treo.
-
-Nếu vẫn thất bại, hãy gửi toàn bộ phần log bắt đầu từ `Errors were encountered while processing`, cùng kết quả của:
-
-```bash
-sudo dpkg --audit
-sudo docker info
 ls -l /dev/kvm
+qemu-system-x86_64 --version
+qemu-img --version
+sudo tail -n 100 /tmp/dockerghcs-qemu.log
+sudo tail -n 100 /tmp/dockerghcs-novnc.log
 ```
+
+Nếu macOS báo thiếu KVM, hãy chạy trên host có nested virtualization thật sự. Script macOS sẽ tải `kvm_amd.conf` cho AMD hoặc `kvm.conf` cho Intel vào `/etc/modprobe.d/kvm.conf`, chạy `modprobe`, rồi thêm user vào các group `kvm`, `libvirt` và `input`. Cần đăng nhập lại hoặc khởi động shell mới để group membership có hiệu lực; script vẫn chạy QEMU bằng root sau bước privilege elevation nên không phụ thuộc vào shell hiện tại.
+
+Log của macOS và Windows nằm tại `/tmp/dockerghcs-qemu.log`; log noVNC tại `/tmp/dockerghcs-novnc.log`; log PulseAudio tại `/tmp/dockerghcs-pulseaudio.log`. Nếu QEMU dừng ngay, gửi 80 dòng cuối của log cùng kết quả `ls -l /dev/kvm`.
 
 ## Chọn Windows, macOS hoặc Proxmox
 
@@ -71,11 +69,11 @@ Khi chạy `a.sh`, script hiển thị menu:
 3) Proxmox (QEMU/KVM)
 ```
 
-Nhập `1` để dùng `windows.yaml` và cài Windows từ link ISO do bạn cung cấp. `windows.yaml` giữ `driver.iso` để cài VirtIO nhưng đồng thời có `AUDIO: "Y"` để image `ghcr.io/dockur/windows` bật sound card ảo và audio streaming trong web viewer. Nhập `2` để dùng `macos.yaml`; script không hỏi Windows ISO và không thêm `USERNAME` hoặc `PASSWORD` vào cấu hình macOS. Lần đầu macOS khởi động, image `dockurr/macos` sẽ tự tải bộ cài cần thiết.
+Nhập `1` để cài Windows bằng `automated/windows-qemu.sh`. Script hỏi link ISO nếu `/mnt/custom.iso` chưa tồn tại, tải VirtIO driver ISO, tạo `/mnt/windows.img` dạng raw và khởi động Windows bằng QEMU/OVMF. Nhập `2` để cài macOS Sequoia 15 bằng `automated/macos-qemu.sh`; script tự tải tool `kholia/OSX-KVM`, chạy `fetch-macOS-v2.py --shortname sequoia`, chuyển `BaseSystem.dmg` thành `BaseSystem.img`, tải LongQT OpenCore ISO và tạo `/mnt/mac_hdd_ng.img` dạng qcow2.
 
-Cấu hình macOS sử dụng `VERSION: "15"`, `RAM_SIZE: "half"`, `CPU_CORES: "max"`, `DISK_SIZE: "400G"`, `AUDIO: "Y"`, `/dev/kvm`, `/dev/net/tun`, cổng web `8006` và VNC `5900`. `AUDIO: "Y"` bật sound card ảo và audio streaming trong web viewer của image `dockurr/macos`; trong web viewer cần bật **Settings → Advanced → Audio**. Cấu hình này cần Linux host có KVM, CPU hỗ trợ AVX2, tối thiểu 4 GB RAM và ít nhất 32 GB dung lượng trống. GitHub Codespaces chỉ chạy được nếu Codespace/host thực sự cấp Docker daemon và `/dev/kvm`.
+MacOS QEMU cần `/dev/kvm` thật sự và CPU có AVX2; script không giả vờ chạy bằng TCG khi KVM thiếu. Script tự chọn `kvm_amd.conf` cho AMD hoặc `kvm.conf` cho Intel, chép vào `/etc/modprobe.d/kvm.conf`, chạy `modprobe`, rồi thêm user vào group `kvm`, `libvirt` và `input`. Lần cài đầu, mở noVNC `8006`, chọn OpenCore và `BaseSystem`, mở Disk Utility, format disk APFS rồi cài macOS. OpenCore ISO phải được gắn như CD/DVD, không phải hard disk [1] [2].
 
-Theo tài liệu chính thức của dockur/macos, macOS được cung cấp bởi Apple và điều khoản sử dụng của Apple có thể giới hạn việc cài đặt trên phần cứng không phải Apple. Chỉ sử dụng cấu hình này khi bạn có quyền và giấy phép phù hợp.
+Theo tài liệu upstream, macOS virtualization có yêu cầu phần cứng, giới hạn hiệu năng/đồ họa và vấn đề pháp lý riêng. Chỉ sử dụng macOS khi bạn có quyền và giấy phép phù hợp với phần cứng và Apple EULA.
 
 ## Proxmox qua QEMU/KVM
 
@@ -151,6 +149,8 @@ chmod +x xfce4.sh
 ./xfce4.sh
 ```
 
+Thư mục `automated/` chứa `common.sh`, `windows-qemu.sh`, `macos-qemu.sh` và `proxmox-qemu.sh`. Ba script dùng chung QEMU/OVMF/PulseAudio/noVNC helper; Windows tạo raw disk, macOS tạo qcow2 disk và Proxmox gọi luồng unattended ổn định trong `a.sh`.
+
 Script `xfce4.sh` cài XFCE4, ưu tiên TigerVNC và dùng TightVNC làm fallback, cùng Google Chrome Stable và PulseAudio (`pulseaudio`, `pulseaudio-utils`, `alsa-utils`). Script tạo cấu hình `~/.vnc/xstartup` để khởi động đúng phiên XFCE4 qua D-Bus và đặt `PULSE_SERVER` tới socket PulseAudio riêng của phiên desktop. Khi chạy không có tham số, script sẽ cài các package còn thiếu rồi tự động khởi động VNC, noVNC và XFCE4; những lần chạy sau sẽ bỏ qua package đã có và chạy ngay.
 
 ```bash
@@ -161,7 +161,7 @@ Nếu chưa có VNC password, script sẽ yêu cầu tạo password ẩn bên tr
 
 Lệnh `./xfce4.sh -start` vẫn được giữ như alias tương thích, nhưng không cần dùng. Script chạy ở foreground; nhấn **Ctrl+C** để dừng toàn bộ VNC, noVNC và XFCE4. Không có lệnh quản lý riêng cho password, stop hoặc status. Có thể đổi cấu hình bằng `VNC_DISPLAY=:2`, `NOVNC_PORT=6081`, `VNC_GEOMETRY=1920x1080` và `VNC_DEPTH=24` khi chạy script. Proxmox vẫn được khởi động bằng lựa chọn `3` của `a.sh`, với noVNC riêng ở cổng `8888` và Web UI guest `8006` được chuyển tiếp qua host port `8006`.
 
-Trong `windows.yaml` và `macos.yaml`, `AUDIO: "Y"` bật sound card ảo và audio streaming chính thức của các image dockur. Windows vẫn giữ `driver.iso` để cài các driver VirtIO khác; `AUDIO: "Y"` là cấu hình âm thanh riêng, không thay thế driver ISO. Khi chạy Windows/macOS, mở web viewer tại port `8006` rồi bật **Settings → Advanced → Audio**.
+Các file `windows.yaml` và `macos.yaml` legacy đã được loại bỏ để tránh giữ password hoặc cấu hình Docker không còn dùng. Toàn bộ Windows/macOS runtime đi qua QEMU trong `automated/`. Audio của các VM QEMU đi qua PulseAudio backend và thiết bị HDA ảo. noVNC chuẩn vẫn chỉ truyền RFB, nên âm thanh trong trình duyệt phụ thuộc vào client/web viewer có hỗ trợ audio riêng.
 
 Nếu Google Chrome crash trong VNC, hãy mở Chrome bằng launcher đã cấu hình:
 
@@ -177,7 +177,13 @@ Mặc định `/mnt/a.img` là raw disk **400G**. Nếu ổ đã tồn tại nh�
 sudo PROXMOX_DISK_SIZE=128G ./a.sh
 ```
 
-Host có `/dev/kvm` với quyền đọc/ghi thì script dùng KVM và CPU model `host`; nếu Codespace không cấp KVM, script tự dùng TCG với CPU model `max`, có thể chậm hơn nhưng không dừng chỉ vì thiếu `/dev/kvm`. Cần đủ dung lượng trống cho ISO và raw disk. Trình tải ISO hỗ trợ cả `curl` và `wget`, sau đó kiểm tra kích thước và SHA256 Proxmox. Kết nối Proxmox dùng port forwarding của Codespace/Ubuntu host và hướng dẫn XFCE4 ở trên. Lần cài đầu tiên boot từ ISO; sau khi cài xong, nếu muốn boot ổ đĩa thay vì ISO, đổi `-boot order=d,menu=on` thành `-boot c` trong `a.sh` hoặc xóa ISO sau khi tắt QEMU.
+Host có `/dev/kvm` với quyền đọc/ghi thì Windows/Proxmox dùng KVM; nếu Codespace không cấp KVM, Windows/Proxmox có thể dùng TCG chậm hơn. macOS không dùng TCG fallback và sẽ dừng với thông báo cần KVM. Cần đủ dung lượng trống cho ISO và disk. Trình tải ISO hỗ trợ `curl`, sau đó kiểm tra kích thước file; Proxmox còn kiểm tra SHA256. Kết nối VM dùng port forwarding của Codespace/Ubuntu host và hướng dẫn XFCE4 ở trên. Lần cài đầu của Windows/Proxmox boot từ ISO; sau khi đã tạo partition table, script tự boot disk. macOS giữ OpenCore ISO làm CD/DVD boot media theo hướng dẫn upstream.
+
+### References
+
+[1]: https://github.com/kholia/OSX-KVM — OSX-KVM: fetch macOS recovery media, convert `BaseSystem.dmg` and boot macOS with QEMU/KVM.
+
+[2]: https://github.com/LongQT-sea/OpenCore-ISO — OpenCore ISO for QEMU/KVM; the ISO must be attached as a CD/DVD drive.
 
 ## Giấy phép
 
