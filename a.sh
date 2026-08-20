@@ -974,8 +974,7 @@ case "${OS_NAME}" in
             bash "${SCRIPT_DIR}/automated/macos-qemu.sh"
         ;;
     Proxmox)
-        VM_STORAGE_DIR=/mnt \
-            DOCKERGHCS_TARGET_USER="${INSTALL_USER:-${SUDO_USER:-}}" \
-            bash "${SCRIPT_DIR}/automated/proxmox-qemu.sh"
+        # Chạy trực tiếp để không tạo vòng lặp a.sh -> wrapper -> a.sh.
+        start_proxmox
         ;;
 esac
