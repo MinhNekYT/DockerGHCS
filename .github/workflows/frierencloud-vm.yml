@@ -1,0 +1,103 @@
+name: FrierenCloud Linux VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: Linux hostname provided by FrierenCloud
+        required: true
+        type: string
+      callback_url:
+        description: "Signed FrierenCloud callback URL"
+        required: true
+        type: string
+      antimining_url:
+        description: "Signed Antimining heartbeat endpoint"
+        required: false
+        type: string
+      ubuntu_version:
+        description: "Ubuntu runner release"
+        required: true
+        type: choice
+        options: ["22.04", "24.04", "26.04"]
+
+jobs:
+  provision-sshx:
+    runs-on: ubuntu-${{ inputs.ubuntu_version }}
+    timeout-minutes: 360
+    steps:
+      - name: Change hostname and report it
+        shell: bash
+        env:
+          FC_HOSTNAME: ${{ inputs.hostname }}
+          FC_CALLBACK_URL: ${{ inputs.callback_url }}
+        run: |
+          set -euo pipefail
+          post_log() {
+            curl --fail --silent --show-error --retry 3 \
+              -X POST "$FC_CALLBACK_URL" \
+              -H "content-type: application/json" \
+              --data "$(jq -nc --arg message "$1" --arg runId "$GITHUB_RUN_ID" --arg status "running" '{message: $message, runId: $runId, status: $status}')" || true
+          }
+          sudo hostnamectl set-hostname "$FC_HOSTNAME"
+          post_log "Hostname set to $FC_HOSTNAME"
+
+      - name: Install FrierenCloud Antimining watchdog
+        if: ${{ inputs.antimining_url != '' }}
+        shell: bash
+        env:
+          FC_ANTIMINING_URL: ${{ inputs.antimining_url }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y nodejs
+          sudo install -d -m 0755 /opt/frierencloud-antimining
+          sudo tee /opt/frierencloud-antimining/watchdog.js >/dev/null <<'NODE'
+          const fs = require("fs"); const https = require("https");
+          const endpoint = new URL(process.env.FC_ANTIMINING_URL);
+          function report(kind, message) {
+            const body = JSON.stringify({ event: kind, message });
+            const request = https.request({ protocol: endpoint.protocol, hostname: endpoint.hostname, port: endpoint.port, path: `${endpoint.pathname}${endpoint.search}`, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) } });
+            request.on("error", () => {}); request.end(body);
+          }
+          report("installed", "Node.js watchdog installed and monitoring started.");
+          setInterval(() => { if (!fs.existsSync("/etc/systemd/system/frierencloud-antimining.service")) { report("terminated", "Watchdog service file was removed; requesting safe shutdown."); process.exit(1); } report("heartbeat", `Watchdog healthy at ${new Date().toISOString()}`); }, 60_000);
+          process.on("SIGTERM", () => process.exit(1));
+          process.on("SIGINT", () => process.exit(1));
+          NODE
+          sudo tee /etc/systemd/system/frierencloud-antimining.service >/dev/null <<'UNIT'
+          [Unit]
+          Description=FrierenCloud Antimining Watchdog (transparent heartbeat monitor)
+          After=network-online.target
+          Wants=network-online.target
+          OnFailure=poweroff.target
+
+          [Service]
+          Type=simple
+          Environment=FC_ANTIMINING_URL=REPLACE_ENDPOINT
+          ExecStart=/usr/bin/node /opt/frierencloud-antimining/watchdog.js
+          Restart=no
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          sudo sed -i "s|REPLACE_ENDPOINT|${FC_ANTIMINING_URL}|" /etc/systemd/system/frierencloud-antimining.service
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now frierencloud-antimining.service
+
+      - name: Install and run SSHX
+        shell: bash
+        env:
+          FC_CALLBACK_URL: ${{ inputs.callback_url }}
+        run: |
+          set -o pipefail
+          post_log() {
+            curl --fail --silent --show-error --retry 3 \
+              -X POST "$FC_CALLBACK_URL" \
+              -H "content-type: application/json" \
+              --data "$(jq -nc --arg message "$1" --arg runId "$GITHUB_RUN_ID" --arg status "running" '{message: $message, runId: $runId, status: $status}')" || true
+          }
+          curl -sSf https://sshx.io/get | sh -s run 2>&1 | while IFS= read -r line; do
+            printf '%s\n' "$line"
+            post_log "$line"
+          done
