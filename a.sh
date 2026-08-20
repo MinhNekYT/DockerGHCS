@@ -27,7 +27,8 @@ PROXMOX_QEMU_LOG="/tmp/dockerghcs-proxmox-qemu.log"
 PROXMOX_NOVNC_LOG="/tmp/dockerghcs-proxmox-novnc.log"
 PROXMOX_PULSE_LOG="/tmp/dockerghcs-proxmox-pulseaudio.log"
 PROXMOX_PULSE_SOCKET="/run/pulse/native"
-PROXMOX_PULSE_PID_FILE="/run/dockerghcs-pulseaudio.pid"
+PROXMOX_PULSE_CONFIG="/run/pulse/dockerghcs-system.pa"
+PROXMOX_PULSE_PID=""
 PROXMOX_PULSE_STARTED=0
 NOVNC_PORT="${NOVNC_PORT:-8888}"
 PROXMOX_GUEST_PORT="${PROXMOX_GUEST_PORT:-8006}"
@@ -325,16 +326,27 @@ start_proxmox_pulseaudio() {
 
     echo "=== Khởi động PulseAudio cho QEMU/noVNC ==="
     install -d -m 0755 /run/pulse
-    rm -f "${PROXMOX_PULSE_PID_FILE}"
     : > "${PROXMOX_PULSE_LOG}"
+    if [[ -f /etc/pulse/system.pa ]]; then
+        sed -E \
+            's|^[[:space:]]*load-module[[:space:]]+module-native-protocol-unix.*$|load-module module-native-protocol-unix socket=/run/pulse/native auth-anonymous=1|' \
+            /etc/pulse/system.pa > "${PROXMOX_PULSE_CONFIG}"
+    else
+        printf '%s\\n' \
+            'load-module module-native-protocol-unix socket=/run/pulse/native auth-anonymous=1' \
+            'load-module module-null-sink sink_name=dockerghcs' > "${PROXMOX_PULSE_CONFIG}"
+    fi
     if ! pulseaudio --system --daemonize=yes --disallow-exit --exit-idle-time=-1 \
-        --pid-file="${PROXMOX_PULSE_PID_FILE}" \
+        --use-pid-file=no -n --file="${PROXMOX_PULSE_CONFIG}" \
         --log-target="file:${PROXMOX_PULSE_LOG}"; then
         echo "Không thể khởi động PulseAudio system mode." >&2
         tail -n 50 "${PROXMOX_PULSE_LOG}" 2>/dev/null || true
         return 1
     fi
     PROXMOX_PULSE_STARTED=1
+    if command -v pgrep > /dev/null 2>&1; then
+        PROXMOX_PULSE_PID="$(pgrep -u pulse -x pulseaudio 2>/dev/null | head -n 1 || true)"
+    fi
 
     local elapsed=0
     while ((elapsed < 15)); do
@@ -720,13 +732,8 @@ stop_stale_processes() {
 
 cleanup_proxmox() {
     if [[ "${PROXMOX_PULSE_STARTED:-0}" == "1" ]] \
-        && [[ -f "${PROXMOX_PULSE_PID_FILE}" ]]; then
-        local pulse_pid
-        pulse_pid="$(cat "${PROXMOX_PULSE_PID_FILE}" 2>/dev/null || true)"
-        if [[ "${pulse_pid}" =~ ^[0-9]+$ ]]; then
-            kill "${pulse_pid}" 2>/dev/null || true
-        fi
-        rm -f "${PROXMOX_PULSE_PID_FILE}"
+        && [[ "${PROXMOX_PULSE_PID:-}" =~ ^[0-9]+$ ]]; then
+        kill "${PROXMOX_PULSE_PID}" 2>/dev/null || true
     fi
     if [[ -n "${NOVNC_PID:-}" ]] && kill -0 "${NOVNC_PID}" 2>/dev/null; then
         kill "${NOVNC_PID}" 2>/dev/null || true

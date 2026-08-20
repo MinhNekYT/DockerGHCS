@@ -10,7 +10,8 @@ VM_QEMU_LOG="${VM_QEMU_LOG:-/tmp/dockerghcs-qemu.log}"
 VM_NOVNC_LOG="${VM_NOVNC_LOG:-/tmp/dockerghcs-novnc.log}"
 VM_PULSE_LOG="${VM_PULSE_LOG:-/tmp/dockerghcs-pulseaudio.log}"
 VM_PULSE_SOCKET="${VM_PULSE_SOCKET:-/run/pulse/native}"
-VM_PULSE_PID_FILE="${VM_PULSE_PID_FILE:-/run/dockerghcs-pulseaudio.pid}"
+VM_PULSE_CONFIG="${VM_PULSE_CONFIG:-/run/pulse/dockerghcs-system.pa}"
+VM_PULSE_PID=""
 VM_PULSE_STARTED=0
 QEMU_PID=""
 NOVNC_PID=""
@@ -206,12 +207,23 @@ start_pulseaudio() {
         return 0
     fi
     install -d -m 0755 /run/pulse
-    rm -f "${VM_PULSE_PID_FILE}"
     : > "${VM_PULSE_LOG}"
+    if [[ -f /etc/pulse/system.pa ]]; then
+        sed -E \
+            's|^[[:space:]]*load-module[[:space:]]+module-native-protocol-unix.*$|load-module module-native-protocol-unix socket=/run/pulse/native auth-anonymous=1|' \
+            /etc/pulse/system.pa > "${VM_PULSE_CONFIG}"
+    else
+        printf '%s\\n' \
+            'load-module module-native-protocol-unix socket=/run/pulse/native auth-anonymous=1' \
+            'load-module module-null-sink sink_name=dockerghcs' > "${VM_PULSE_CONFIG}"
+    fi
     pulseaudio --system --daemonize=yes --disallow-exit --exit-idle-time=-1 \
-        --pid-file="${VM_PULSE_PID_FILE}" \
+        --use-pid-file=no -n --file="${VM_PULSE_CONFIG}" \
         --log-target="file:${VM_PULSE_LOG}"
     VM_PULSE_STARTED=1
+    if command -v pgrep >/dev/null 2>&1; then
+        VM_PULSE_PID="$(pgrep -u pulse -x pulseaudio 2>/dev/null | head -n 1 || true)"
+    fi
     local elapsed=0
     while ((elapsed < 15)); do
         if [[ -S "${VM_PULSE_SOCKET}" ]] \
@@ -279,13 +291,8 @@ cleanup_automated_vm() {
     if [[ -n "${QEMU_PID:-}" ]] && kill -0 "${QEMU_PID}" 2>/dev/null; then
         kill "${QEMU_PID}" 2>/dev/null || true
     fi
-    if [[ "${VM_PULSE_STARTED:-0}" == 1 && -f "${VM_PULSE_PID_FILE}" ]]; then
-        local pulse_pid
-        pulse_pid="$(cat "${VM_PULSE_PID_FILE}" 2>/dev/null || true)"
-        if [[ "${pulse_pid}" =~ ^[0-9]+$ ]]; then
-            kill "${pulse_pid}" 2>/dev/null || true
-        fi
-        rm -f "${VM_PULSE_PID_FILE}"
+    if [[ "${VM_PULSE_STARTED:-0}" == 1 && "${VM_PULSE_PID:-}" =~ ^[0-9]+$ ]]; then
+        kill "${VM_PULSE_PID}" 2>/dev/null || true
     fi
     exit "${exit_code}"
 }
